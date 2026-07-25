@@ -561,9 +561,19 @@ def _block_browser_launches(environment: dict[str, str], profile: Path) -> Path:
         path = guard_directory / name
         path.hardlink_to(launcher)
 
+    safe_path = [
+        entry
+        for entry in environment["PATH"].split(os.pathsep)
+        if entry and not entry.casefold().startswith("/mnt/")
+    ]
+    if not safe_path:
+        raise CodexAcceptanceError("Browser guard removed every executable path")
     environment["BROWSER"] = str(launcher)
     environment["SENSAI_BROWSER_GUARD_EVIDENCE"] = str(evidence)
-    environment["PATH"] = f"{guard_directory}{os.pathsep}{environment['PATH']}"
+    environment["PATH"] = os.pathsep.join((str(guard_directory), *safe_path))
+    # WSL_INTEROP is the bridge that lets a Linux process execute Windows .exe
+    # files by an absolute path. This acceptance lane must not reach host UI.
+    environment.pop("WSL_INTEROP", None)
     environment["DISPLAY"] = "sensai-browser-guard"
     environment["WAYLAND_DISPLAY"] = "sensai-browser-guard"
     return evidence

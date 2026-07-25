@@ -287,6 +287,19 @@ def test_public_acceptance_blocks_a_browser_launch_without_retaining_its_url(
     assert secret_url not in str(caught.value)
 
 
+def test_browser_guard_disables_wsl_windows_execution_paths(tmp_path: Path) -> None:
+    environment = {
+        "PATH": "/usr/local/bin:/mnt/c/Windows/System32:/usr/bin:/mnt/d/tools",
+        "WSL_INTEROP": "/run/WSL/123_interop",
+    }
+
+    codex_acceptance._block_browser_launches(environment, tmp_path)
+
+    assert "WSL_INTEROP" not in environment
+    assert all(not entry.startswith("/mnt/") for entry in environment["PATH"].split(os.pathsep))
+    assert environment["PATH"].split(os.pathsep)[0] == str(tmp_path / "browser-guard")
+
+
 def test_public_acceptance_rejects_snapshot_replacement_after_verification_before_codex(
     tmp_path: Path,
     release_bundle: Path,
