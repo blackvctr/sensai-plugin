@@ -15,8 +15,8 @@ Sensai gives advice, implementation instructions, architecture, and optional ref
 You do local work through your host's normal tools. Before an authorization screen or an external
 action, briefly tell the person what will happen and why. Involve them only where the platform
 requires an account choice, consent, a secret, payment, or confirmation of an external side effect.
-Give technical details when the person asks. Never ask them to copy an authorization code, token,
-or password into this conversation.
+Give technical details when the person asks. Never ask them to copy an authorization URL, code,
+token, or password into this conversation.
 
 After the plugin is loaded, call `tell_sensai` to start the consultation. Ask Sensai to introduce
 itself briefly and ask for the information it needs. Do not assume that authorization succeeded;
