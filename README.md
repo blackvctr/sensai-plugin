@@ -98,8 +98,8 @@ commands, paths, plugin versions, or transport details in the person-facing stat
    Windows. A format mismatch is not fixed by sandbox changes or `sudo`; retain the raw check output.
 
 3. If `claude` is absent from `PATH`, first explain to the human in their language that automating the
-   Sensai plugin installation requires installing the official Claude CLI, a separate Anthropic program
-   that changes their user profile. Request the human's explicit approval. Only after approval, run
+   Sensai plugin installation requires installing the official Claude CLI, a separate Anthropic program.
+   Request the human's explicit approval. Only after approval, run
    `curl -fsSL https://claude.ai/install.sh | bash` on macOS or Linux, or
    `irm https://claude.ai/install.ps1 | iex` in PowerShell on Windows, and report the result. It
    installs in `~/.local/bin` or the user profile on Windows. If a sandbox blocks required external
