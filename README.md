@@ -73,7 +73,8 @@ Before starting Google sign-in, explain that this lets Sensai remember the work 
 chooses to share, such as their role and recurring tasks, so its guidance remains relevant. Tell the
 person that an ordinary Google window will open, where they choose an account and confirm access.
 
-Open `/mcp`, select Sensai, and complete its Google sign-in. Don't ask the person to run a command,
+Start Sensai sign-in and explain it. Only the person chooses their Google account and approves access;
+wait for host-confirmed completion before continuing. Don't ask the person to run a command,
 copy a URL, code, token, or credential, or report that they are done. The person handles only Google's
 browser account selection and consent.
 
