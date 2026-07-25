@@ -23,12 +23,13 @@ Install Sensai https://github.com/grayvectorblack/sensai-plugin
 
 ## Installation (AI agent part)
 
-Here and below, speak to the person in their language and make every step convenient for them. Unless
+Here and below, speak to the person in their language and make every step convenient for them. English
+may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless
 you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening
 in plain language and adapt your terminology to their level. Treat the person's time as especially
 valuable: don't ask them to perform manually anything you can do yourself. Avoid technical terms and
-unnecessary interface clicks. In both products, the person should normally only need to approve Google
-sign-in and then restart the app or follow a link to another tab; do everything else yourself.
+unnecessary interface clicks. Take care of every step you can; leave the person only actions that need
+their own account choice or approval.
 
 ### ChatGPT Desktop
 
@@ -37,19 +38,15 @@ codex plugin marketplace add grayvectorblack/sensai-plugin
 codex plugin add sensai@sensai
 ```
 
-Before starting Google sign-in, explain that this lets Sensai remember the work context the person
-chooses to share, such as their role and recurring tasks, so its guidance remains relevant. Tell the
-person that an ordinary Google window will open, where they choose an account and confirm access.
+Before starting Google sign-in, explain that it establishes a protected Sensai consultation context.
+Sensai remembers only work information the user's agent explicitly sends, such as the person's role and
+recurring tasks, so its guidance can remain relevant. Tell the person that an ordinary Google window
+will open, where they choose an account and confirm access.
 
-Run `codex mcp login sensai` once as one long-running terminal operation. Don't open the authorization
-URL manually. When the terminal tool yields a running session or handle, preserve it and poll that same
-handle every 5-10 seconds until the command actually exits or reports its native five-minute timeout.
-An empty poll or a poll with no new output still means the operation is running; it is not completion.
-Don't launch another login, close the process, end the turn, or return a final response while that
-session is alive. Only a real process exit decides whether login succeeded or reached its native
-timeout. Retry only after that operation reports a true timeout. The person handles only Google's
-browser account selection and consent; don't ask them to run a command, copy a URL, code, token, or
-credential, or report that they are done.
+Run `codex mcp login sensai` once. Don't open or copy the authorization URL manually. Wait for the
+command to report actual completion, and do not start another login while it is still running. The
+person handles only Google's browser account selection and consent; don't ask them to run a command,
+copy a URL, code, token, or credential, or report that they are done.
 
 After sign-in succeeds, give the person one complete localized sentence. For English, use exactly:
 
@@ -69,9 +66,10 @@ claude plugin marketplace add grayvectorblack/sensai-plugin
 claude plugin install sensai@sensai --scope user
 ```
 
-Before starting Google sign-in, explain that this lets Sensai remember the work context the person
-chooses to share, such as their role and recurring tasks, so its guidance remains relevant. Tell the
-person that an ordinary Google window will open, where they choose an account and confirm access.
+Before starting Google sign-in, explain that it establishes a protected Sensai consultation context.
+Sensai remembers only work information the user's agent explicitly sends, such as the person's role and
+recurring tasks, so its guidance can remain relevant. Tell the person that an ordinary Google window
+will open, where they choose an account and confirm access.
 
 Start Sensai sign-in and explain it. Only the person chooses their Google account and approves access;
 wait for host-confirmed completion before continuing. Don't ask the person to run a command,
@@ -91,12 +89,8 @@ commands, paths, plugin versions, or transport details in the person-facing stat
    `which claude` or `command -v claude` in bash/zsh; `Get-Command claude` or `where.exe claude` in
    PowerShell.
 
-2. Do not execute a `claude` file from the app's internal directories. It is a service file, not the
-   host CLI. For example, macOS stores a Linux build at
-   `~/Library/Application Support/Claude/claude-code-vm/<version>/claude`, which produces `exec format
-   error`. Treat app-directory files outside `PATH` as service-only. Verify the file and host formats:
-   `file <path>` and `uname -sm` on Unix; inspect the extension and `$env:PROCESSOR_ARCHITECTURE` on
-   Windows. A format mismatch is not fixed by sandbox changes or `sudo`; retain the raw check output.
+2. Do not execute a `claude` file found inside the app's internal directories. It is not the host CLI;
+   use the `claude` command found on `PATH` instead.
 
 3. If `claude` is absent from `PATH`, first explain to the human in their language that automating the
    Sensai plugin installation requires installing the official Claude CLI, a separate Anthropic program.
@@ -108,6 +102,5 @@ commands, paths, plugin versions, or transport details in the person-facing stat
    use the host-supported approval mechanism. Recheck `PATH` in the same session before continuing
    the plugin installation.
 
-4. Do not edit `installed_plugins.json`. `settings.json` entries such as `extraKnownMarketplaces` and
-   `enabledPlugins` register a marketplace but do not install a plugin; the skill will not appear and
-   `plugin list` remains empty. These files are under `~/.claude` or `%USERPROFILE%\.claude` on Windows.
+4. Do not edit Claude's internal plugin configuration files manually. Use the CLI commands above to
+   register the marketplace and install the plugin.
