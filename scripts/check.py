@@ -6,9 +6,9 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
+from time import monotonic
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 MCP_URL = "https://black-vector.com/sensai/mcp"
@@ -22,6 +22,7 @@ def run(command: list[str], *, environment: dict[str, str]) -> None:
 
 
 def main() -> None:
+    started_at = monotonic()
     with tempfile.TemporaryDirectory(prefix="sensai-plugin-check-", dir="/tmp") as temporary_root:
         environment = os.environ.copy()
         environment.update(
@@ -32,7 +33,7 @@ def main() -> None:
             }
         )
         release_bundle = str(Path(temporary_root) / "release")
-        run(["uv", "run", "ruff", "check", "src", "tests"], environment=environment)
+        run(["uv", "run", "ruff", "check", "src", "tests", "scripts"], environment=environment)
         run(
             [
                 "uv",
@@ -68,6 +69,7 @@ def main() -> None:
             ],
             environment=environment,
         )
+    print(f"Sensai pre-push checks passed in {monotonic() - started_at:.1f}s.", flush=True)
 
 
 if __name__ == "__main__":

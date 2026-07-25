@@ -8,42 +8,38 @@ Sensai may return advice, architecture, detailed implementation instructions, an
 reference snippets. The user's own AI agent writes and reviews any resulting code, installs its
 dependencies, runs it, and verifies it locally through the normal controls of ChatGPT Desktop or
 Claude Desktop.
-Connector setup also happens locally. The person completes any authorization or consent screen.
+Connector setup also happens locally.
 
 ## Installation (if you are human)
 
 1. You need [ChatGPT Desktop](https://chatgpt.com/download/) with an OpenAI subscription, or [Claude Desktop](https://claude.ai/download) with an Anthropic subscription.
 2. In ChatGPT Desktop, make sure you are on the Codex tab. In Claude Desktop, make sure you are on the Code tab.
-3. Start a new chat with this instruction:
+3. Use a strong model, especially while installing the plugin. At the time of writing, use GPT-5.6 Terra rather than Luna; in Claude Desktop, use Opus rather than Sonnet.
+4. Start a new chat with this instruction:
 
 ```text
 Install Sensai https://github.com/grayvectorblack/sensai-plugin
 ```
 
-### ChatGPT Desktop
-
-To apply the change fully, the agent may suggest starting a new chat or restarting the app.
-
-### Claude Desktop
-
-To apply the change fully, the agent may suggest starting a new chat or restarting the app.
-
 ## Installation (AI agent part)
 
 Here and below, speak to the person in their language and make every step convenient for them. Unless
 you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening
-in plain language and adapt your terminology to their level.
+in plain language and adapt your terminology to their level. Treat the person's time as especially
+valuable: don't ask them to perform manually anything you can do yourself. Avoid technical terms and
+unnecessary interface clicks. In both products, the person should normally only need to approve Google
+sign-in and then restart the app or follow a link to another tab; do everything else yourself.
 
-### ChatGPT Desktop (Codex tab)
+### ChatGPT Desktop
 
 ```bash
 codex plugin marketplace add grayvectorblack/sensai-plugin
 codex plugin add sensai@sensai
 ```
 
-Before starting Google sign-in, explain that this connects Sensai to the current ChatGPT Desktop
-session, so Sensai can start consulting in that session. Tell the person that an ordinary Google window
-will open, where they choose an account and confirm access.
+Before starting Google sign-in, explain that this lets Sensai remember the work context the person
+chooses to share, such as their role and recurring tasks, so its guidance remains relevant. Tell the
+person that an ordinary Google window will open, where they choose an account and confirm access.
 
 Run `codex mcp login sensai` once as one long-running terminal operation. Don't open the authorization
 URL manually. When the terminal tool yields a running session or handle, preserve it and poll that same
@@ -55,28 +51,27 @@ timeout. Retry only after that operation reports a true timeout. The person hand
 browser account selection and consent; don't ask them to run a command, copy a URL, code, token, or
 credential, or report that they are done.
 
-After sign-in succeeds, inform the person in their language: "The Sensai plugin is installed. To start
-using it, open a [new chat]. Then press Enter to send the prepared message." Make `new chat` an actual
-`codex://new?prompt=<URL-encoded prompt>` link. Its prompt must be the person's-language equivalent of:
+After sign-in succeeds, give the person one complete localized sentence. For English, use exactly:
 
-```text
-Run [@sensai](plugin://sensai@sensai).
+```markdown
+The Sensai plugin is installed. To start using it, open a [new chat](codex://new?prompt=Run%20%5B%40sensai%5D%28plugin%3A%2F%2Fsensai%40sensai%29.). Then press Enter to send the prepared message.
 ```
 
-The link only fills the new-chat composer; it does not send the message. Don't ask the person to greet
-Sensai manually. Don't include MCP, commands, paths, plugin versions, or transport details in the
-person-facing status update.
+For another language, translate both the visible sentence and `Run` inside the link before URL-encoding
+the prompt. Keep `[@sensai](plugin://sensai@sensai)` unchanged. The link only fills the new-chat
+composer; it does not send the message. Don't include MCP, commands, paths, plugin versions, or
+transport details in the person-facing status update.
 
-### Claude Desktop (Code tab)
+### Claude Desktop
 
 ```bash
 claude plugin marketplace add grayvectorblack/sensai-plugin
 claude plugin install sensai@sensai --scope user
 ```
 
-Before starting Google sign-in, explain that this connects Sensai to the current Claude Desktop
-session, so Sensai can start consulting in that session. Tell the person that an ordinary Google window
-will open, where they choose an account and confirm access.
+Before starting Google sign-in, explain that this lets Sensai remember the work context the person
+chooses to share, such as their role and recurring tasks, so its guidance remains relevant. Tell the
+person that an ordinary Google window will open, where they choose an account and confirm access.
 
 Open `/mcp`, select Sensai, and complete its Google sign-in. Don't ask the person to run a command,
 copy a URL, code, token, or credential, or report that they are done. The person handles only Google's
