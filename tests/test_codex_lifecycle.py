@@ -255,6 +255,38 @@ def test_public_acceptance_context_keeps_profile_alive_and_cleans_after_body_fai
     assert sentinel.read_text(encoding="utf-8") == "model = 'unchanged'\n"
 
 
+def test_public_acceptance_blocks_a_browser_launch_without_retaining_its_url(
+    tmp_path: Path,
+    release_bundle: Path,
+) -> None:
+    executable = tmp_path / "codex"
+    secret_url = "https://login.example.invalid/oauth?code=do-not-retain"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1 $2\" = \"plugin marketplace\" ]; then\n"
+        "  printf '{\"marketplaceName\": \"sensai-local\"}\\n'\n"
+        "elif [ \"$1 $2\" = \"plugin add\" ]; then\n"
+        f"  xdg-open {secret_url!r}\n"
+        "  printf '{\"version\": \"0.2.0\", \"installedPath\": \"/ignored\"}\\n'\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+    with (
+        pytest.raises(CodexAcceptanceError, match=r"^browser_open_attempt_blocked$") as caught,
+        installed_codex_plugin(
+            release_bundle,
+            codex_executable=str(executable),
+            real_codex_home=tmp_path / "real-profile",
+            block_browser_launch=True,
+        ),
+    ):
+        pytest.fail("blocked browser launch must not reach the test body")
+
+    assert secret_url not in str(caught.value)
+
+
 def test_public_acceptance_rejects_snapshot_replacement_after_verification_before_codex(
     tmp_path: Path,
     release_bundle: Path,

@@ -37,6 +37,16 @@ PASSTHROUGH_ENVIRONMENT_NAMES = (
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
 )
+_BROWSER_GUARD_MARKER = "browser_open_attempt_blocked\n"
+_BROWSER_LAUNCHER_NAMES = (
+    "xdg-open",
+    "gio",
+    "sensible-browser",
+    "wslview",
+    "open",
+    "cmd.exe",
+    "powershell.exe",
+)
 PLUGIN_LIFECYCLE_BOUNDARY = (
     ".tmp/marketplaces",
     "plugins/cache/sensai-local",
@@ -525,8 +535,61 @@ def _isolated_environment(profile: Path) -> dict[str, str]:
     return environment
 
 
-def _run_codex_json(codex: str, env: dict[str, str], profile: Path, *arguments: str) -> Any:
+def _block_browser_launches(environment: dict[str, str], profile: Path) -> Path:
+    """Prevent an isolated CLI acceptance run from opening host UI.
+
+    Codex is allowed to attempt OAuth discovery while it installs an MCP
+    plugin.  This acceptance lane intentionally does not authenticate, so a
+    browser launch is both unexpected and harmful: it could put an error page
+    in front of the person running the test.  The guard intercepts the normal
+    Linux and WSL launchers before they can delegate to the host browser.  It
+    records only a fixed marker, never a URL or OAuth query value.
+    """
+    guard_directory = profile / "browser-guard"
+    guard_directory.mkdir(mode=0o700)
+    evidence = guard_directory / "browser-open-attempt.log"
+    launcher = guard_directory / "blocked-browser-launcher"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'browser_open_attempt_blocked' "
+        ">> \"$SENSAI_BROWSER_GUARD_EVIDENCE\"\n"
+        "exit 73\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o700)
+    for name in _BROWSER_LAUNCHER_NAMES:
+        path = guard_directory / name
+        path.hardlink_to(launcher)
+
+    environment["BROWSER"] = str(launcher)
+    environment["SENSAI_BROWSER_GUARD_EVIDENCE"] = str(evidence)
+    environment["PATH"] = f"{guard_directory}{os.pathsep}{environment['PATH']}"
+    environment["DISPLAY"] = "sensai-browser-guard"
+    environment["WAYLAND_DISPLAY"] = "sensai-browser-guard"
+    return evidence
+
+
+def _raise_if_browser_launch_was_blocked(evidence: Path | None) -> None:
+    if evidence is None or not evidence.exists():
+        return
+    try:
+        marker = evidence.read_text(encoding="utf-8")
+    except OSError as error:
+        raise CodexAcceptanceError("browser_open_attempt_evidence_unreadable") from error
+    if marker != _BROWSER_GUARD_MARKER:
+        raise CodexAcceptanceError("browser_open_attempt_evidence_invalid")
+    raise CodexAcceptanceError("browser_open_attempt_blocked")
+
+
+def _run_codex_json(
+    codex: str,
+    env: dict[str, str],
+    profile: Path,
+    *arguments: str,
+    browser_guard_evidence: Path | None = None,
+) -> Any:
     completed = _run([codex, *arguments], env=env, cwd=profile)
+    _raise_if_browser_launch_was_blocked(browser_guard_evidence)
     if completed.returncode != 0:
         raise CodexAcceptanceError(
             f"Codex command failed: codex {' '.join(arguments[:3])}\n{completed.stderr.strip()}"
@@ -571,6 +634,7 @@ def installed_codex_plugin(
     *,
     codex_executable: str | None = None,
     real_codex_home: Path | None = None,
+    block_browser_launch: bool = False,
 ) -> Iterator[InstalledCodexPlugin]:
     """Install one immutable verified release and keep its isolated profile alive."""
     source = bundle.resolve()
@@ -627,18 +691,44 @@ def installed_codex_plugin(
         for relative in ("codex-home", "home", "tmp", "xdg-cache", "xdg-config", "xdg-data"):
             (profile / relative).mkdir()
         environment = _isolated_environment(profile)
+        browser_guard_evidence = (
+            _block_browser_launches(environment, profile) if block_browser_launch else None
+        )
         added = _run_codex_json(
-            codex, environment, profile, "plugin", "marketplace", "add", str(marketplace), "--json"
+            codex,
+            environment,
+            profile,
+            "plugin",
+            "marketplace",
+            "add",
+            str(marketplace),
+            "--json",
+            browser_guard_evidence=browser_guard_evidence,
         )
         if not isinstance(added, dict) or added.get("marketplaceName") != selector.split("@", 1)[1]:
             raise CodexAcceptanceError("Codex registered a different marketplace")
         installed = _run_codex_json(
-            codex, environment, profile, "plugin", "add", selector, "--json"
+            codex,
+            environment,
+            profile,
+            "plugin",
+            "add",
+            selector,
+            "--json",
+            browser_guard_evidence=browser_guard_evidence,
         )
         _assert_installed(installed, profile, version, marketplace / "plugins" / "sensai")
         assert_snapshot_unchanged("after Codex plugin installation")
         observed_url = _observed_mcp_url(
-            _run_codex_json(codex, environment, profile, "mcp", "list", "--json")
+            _run_codex_json(
+                codex,
+                environment,
+                profile,
+                "mcp",
+                "list",
+                "--json",
+                browser_guard_evidence=browser_guard_evidence,
+            )
         )
         assert_snapshot_unchanged("after Codex lifecycle commands")
         if observed_url != expected_url:
