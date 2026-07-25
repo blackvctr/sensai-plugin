@@ -46,6 +46,10 @@ relevant account access or external action. Sensai does not perform local steps 
 person's external accounts. Report results to Sensai only when you or the person has actually
 confirmed them; missing confirmation is not proof of failure or disconnection.
 
+After material local work, connector setup, or a user-visible artifact, send Sensai one concise
+outcome update in the same conversation: what you attempted, what actually changed or was
+produced, and the exact blocker if it did not work. Do not send routine progress chatter.
+
 Send relevant replies from the person back to Sensai in the same conversation. During discovery,
 relay their factual answer without adding a competing request. Let Sensai decide whether to ask a
 necessary follow-up, recommend a connector, or compose a useful scenario.
