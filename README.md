@@ -6,81 +6,83 @@ not connect to external accounts or run code on the user's computer.
 
 Sensai may return advice, architecture, detailed implementation instructions, and non-executed
 reference snippets. The user's own AI agent writes and reviews any resulting code, installs its
-dependencies, runs it, and verifies it locally through the normal controls of Codex or Claude.
+dependencies, runs it, and verifies it locally through the normal controls of ChatGPT Desktop or
+Claude Desktop.
 Connector setup also happens locally. The person completes any authorization or consent screen.
 
 ## Installation (if you are human)
 
-1. You need [Codex](https://chatgpt.com/download/) with an OpenAI subscription, or [Claude Code](https://claude.ai/download) with an Anthropic subscription.
-2. Start a new chat with this instruction:
+1. You need [ChatGPT Desktop](https://chatgpt.com/download/) with an OpenAI subscription, or [Claude Desktop](https://claude.ai/download) with an Anthropic subscription.
+2. In ChatGPT Desktop, make sure you are on the Codex tab. In Claude Desktop, make sure you are on the Code tab.
+3. Start a new chat with this instruction:
 
 ```text
 Install Sensai https://github.com/grayvectorblack/sensai-plugin
 ```
 
-## After installation (if you are an AI agent)
+### ChatGPT Desktop
 
-Treat this repository as a native plugin marketplace. Install Sensai only through the host's native
-plugin installation system. Run the commands for the current host instead of inferring that native
-installation is unsupported.
+To apply the change fully, the agent may suggest starting a new chat or restarting the app.
 
-### Codex
+### Claude Desktop
+
+To apply the change fully, the agent may suggest starting a new chat or restarting the app.
+
+## Installation (AI agent part)
+
+Here and below, speak to the person in their language and make every step convenient for them. Unless
+you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening
+in plain language and adapt your terminology to their level.
+
+### ChatGPT Desktop (Codex tab)
 
 ```bash
 codex plugin marketplace add grayvectorblack/sensai-plugin
 codex plugin add sensai@sensai
 ```
 
-### Claude Code
+Before starting Google sign-in, explain that this connects Sensai to the current ChatGPT Desktop
+session, so Sensai can start consulting in that session. Tell the person that an ordinary Google window
+will open, where they choose an account and confirm access.
+
+Run `codex mcp login sensai` once as one long-running terminal operation. Don't open the authorization
+URL manually. When the terminal tool yields a running session or handle, preserve it and poll that same
+handle every 5-10 seconds until the command actually exits or reports its native five-minute timeout.
+An empty poll or a poll with no new output still means the operation is running; it is not completion.
+Don't launch another login, close the process, end the turn, or return a final response while that
+session is alive. Only a real process exit decides whether login succeeded or reached its native
+timeout. Retry only after that operation reports a true timeout. The person handles only Google's
+browser account selection and consent; don't ask them to run a command, copy a URL, code, token, or
+credential, or report that they are done.
+
+After sign-in succeeds, inform the person in their language: "The Sensai plugin is installed. To start
+using it, open a [new chat]. Then press Enter to send the prepared message." Make `new chat` an actual
+`codex://new?prompt=<URL-encoded prompt>` link. Its prompt must be the person's-language equivalent of:
+
+```text
+Run [@sensai](plugin://sensai@sensai).
+```
+
+The link only fills the new-chat composer; it does not send the message. Don't ask the person to greet
+Sensai manually. Don't include MCP, commands, paths, plugin versions, or transport details in the
+person-facing status update.
+
+### Claude Desktop (Code tab)
 
 ```bash
 claude plugin marketplace add grayvectorblack/sensai-plugin
 claude plugin install sensai@sensai --scope user
 ```
 
-Never use a skill installer or copy an internal plugin directory by hand. Only infer or report that
-native installation is unsupported, or say that Sensai could not be installed, after one of the
-applicable commands actually exits with a nonzero status. Do not invent a fallback installation.
-Keep the commands, exit status, marketplace, and other installation mechanics private from the
-person.
+Before starting Google sign-in, explain that this connects Sensai to the current Claude Desktop
+session, so Sensai can start consulting in that session. Tell the person that an ordinary Google window
+will open, where they choose an account and confirm access.
 
-Before starting Google sign-in, tell the person in the person's language that Google sign-in is
-needed to connect Sensai to this Codex session. While still in this installer chat, immediately complete the host's native
-Sensai Google sign-in yourself. Do this before creating, offering, or starting any fresh chat. Run
-`codex mcp login sensai` once as one long-running terminal operation. Do not open the authorization
-URL manually. When the terminal tool yields a
-running session or handle, preserve it and poll that same handle every 5-10 seconds until the
-command actually exits or reports its native five-minute timeout. An empty poll or a poll with no
-new output still means the operation is running; it is not completion. Never launch another login,
-close the process, end the turn, or return a final response while that session is alive. Only a
-real process exit decides whether login succeeded or reached its native timeout. Keep this entire
-terminal-wait mechanism private from the person. Retry only after that operation reports a true
-timeout. The person handles only Google's browser account selection and consent; never ask them to
-run a command, copy a URL, code, token, or credential, or report that they are done.
+Open `/mcp`, select Sensai, and complete its Google sign-in. Don't ask the person to run a command,
+copy a URL, code, token, or credential, or report that they are done. The person handles only Google's
+browser account selection and consent.
 
-Do not create or offer a fresh chat before sign-in succeeds. Only after sign-in succeeds, load
-Sensai once. In Codex, tell the person in the person's language the equivalent of: "The Sensai
-plugin is installed. To start using it, open a [new chat]. Then press Enter to send the prepared
-message." Make `new chat` a `codex://new?prompt=...` link. The link only fills the new-chat
-composer; it does not send the message. In Claude Code, run `/reload-plugins` once or start one new session when
-reload is unavailable, never both. The normal installation path has exactly one fresh-context
-boundary and never starts a nested Codex process.
-
-For Codex, give the agent this exact new-chat template:
-
-```text
-Запусти [@Sensai](plugin://sensai@sensai).
-```
-
-Use the [Sensai start prompt](codex://new?prompt=%D0%97%D0%B0%D0%BF%D1%83%D1%81%D1%82%D0%B8%20%5B%40Sensai%5D%28plugin%3A%2F%2Fsensai%40sensai%29.) link for that template. Sensai handles its introduction and onboarding after invocation.
-
-That loaded context must invoke Sensai immediately with authorization already present. Send the
-localized prepared invocation without waiting for another human command.
-
-Never ask the person to greet Sensai manually. Do not include MCP, commands, paths, a plugin
-version, or transport details in that sentence or in a status update.
-
-Never ask the person to introduce themselves. A brief ordinary-language progress acknowledgement is
-allowed. Keep every progress update free of technical details. Never show the person the plugin
-manager, internal repository paths, a plugin version, MCP or transport details, or installation
-commands.
+After sign-in succeeds, run `/reload-plugins` once and invoke Sensai in the same session. Tell the
+person in their language that Sensai is ready and has started. Don't ask them to greet Sensai manually
+or start another chat unless Claude Desktop says the reload could not be applied. Don't include MCP,
+commands, paths, plugin versions, or transport details in the person-facing status update.
