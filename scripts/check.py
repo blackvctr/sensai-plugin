@@ -65,8 +65,6 @@ def main() -> None:
                 "scripts/verify_release.py",
                 "--bundle",
                 release_bundle,
-                "--live-mcp-url",
-                MCP_URL,
             ],
             environment=environment,
         )
