@@ -84,32 +84,27 @@ commands, paths, plugin versions, or transport details in the person-facing stat
 
 #### Known problems
 
-If Claude Desktop says that it cannot install the plugin:
+1. Do not use `/plugin` in the app chat. This is a known limitation
+   ([anthropics/claude-code#42142](https://github.com/anthropics/claude-code/issues/42142)), not an
+   installation failure. Install plugins through the real `claude` CLI. First locate it on `PATH`:
+   `which claude` or `command -v claude` in bash/zsh; `Get-Command claude` or `where.exe claude` in
+   PowerShell.
 
-1. The `/plugin` command in the Desktop chat does not work. This is a known limitation
-   ([anthropics/claude-code#42142](https://github.com/anthropics/claude-code/issues/42142)), not a
-   failed installation. Plugins are installed through the `claude` CLI, and the app does not put that
-   CLI on `PATH`. Start by checking `PATH` using your shell: `which claude` or `command -v claude` in
-   bash/zsh; `Get-Command claude` or `where.exe claude` in PowerShell.
+2. Do not execute a `claude` file from the app's internal directories. It is a service file, not the
+   host CLI. For example, macOS stores a Linux build at
+   `~/Library/Application Support/Claude/claude-code-vm/<version>/claude`, which produces `exec format
+   error`. Treat app-directory files outside `PATH` as service-only. Verify the file and host formats:
+   `file <path>` and `uname -sm` on Unix; inspect the extension and `$env:PROCESSOR_ARCHITECTURE` on
+   Windows. A format mismatch is not fixed by sandbox changes or `sudo`; retain the raw check output.
 
-2. A file named `claude` inside the app's own directories is a service file for the app's internal
-   machinery; launching it directly is meaningless. On macOS, it is
-   `~/Library/Application Support/Claude/claude-code-vm/<version>/claude`; it is a Linux build, which
-   causes `exec format error`. Treat any file found outside `PATH` in app directories as service-only.
-   Check its format against the host system: `file <path>` and `uname -sm` on Unix; on Windows, inspect
-   the extension and `$env:PROCESSOR_ARCHITECTURE`. A format mismatch is not a permissions problem:
-   neither disabling the sandbox nor `sudo` fixes it. Before claiming installation is impossible, show
-   the raw format-check output.
+3. If `claude` is absent from `PATH`, explain that the official installer installs software and modifies
+   the user profile, then request the human's explicit approval. Only after approval, run
+   `curl -fsSL https://claude.ai/install.sh | bash` on macOS or Linux, or
+   `irm https://claude.ai/install.ps1 | iex` in PowerShell on Windows, and report the result. It
+   installs in `~/.local/bin` or the user profile on Windows. If a sandbox blocks required external
+   writes, request the human's explicit confirmation for elevated execution; only after confirmation,
+   use the host-supported approval mechanism. Recheck `PATH` in the same session.
 
-3. If the CLI is absent from `PATH`, install it yourself instead of giving commands to the person.
-   On macOS and Linux, run `curl -fsSL https://claude.ai/install.sh | bash`. On Windows, run
-   `irm https://claude.ai/install.ps1 | iex` in PowerShell. The binary is installed in `~/.local/bin`
-   (or in the user's profile on Windows). If the sandbox prevents writes outside the workspace, repeat
-   the command with `dangerouslyDisableSandbox`; the person only needs to confirm that in the chat. On
-   native Windows there is no sandbox, so that step is unnecessary. Then check `PATH` again in the
-   same session: the earlier `not found` result is no longer relevant.
-
-4. Don't edit `installed_plugins.json` manually. Editing `settings.json` keys such as
-   `extraKnownMarketplaces` or `enabledPlugins` registers a marketplace but does not install a plugin:
-   the skill will not appear and `plugin list` remains empty. These files are in `~/.claude` (or
-   `%USERPROFILE%\.claude` on Windows).
+4. Do not edit `installed_plugins.json`. `settings.json` entries such as `extraKnownMarketplaces` and
+   `enabledPlugins` register a marketplace but do not install a plugin; the skill will not appear and
+   `plugin list` remains empty. These files are under `~/.claude` or `%USERPROFILE%\.claude` on Windows.
