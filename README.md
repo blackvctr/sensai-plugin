@@ -97,13 +97,15 @@ commands, paths, plugin versions, or transport details in the person-facing stat
    `file <path>` and `uname -sm` on Unix; inspect the extension and `$env:PROCESSOR_ARCHITECTURE` on
    Windows. A format mismatch is not fixed by sandbox changes or `sudo`; retain the raw check output.
 
-3. If `claude` is absent from `PATH`, explain that the official installer installs software and modifies
-   the user profile, then request the human's explicit approval. Only after approval, run
+3. If `claude` is absent from `PATH`, first explain to the human in their language that automating the
+   Sensai plugin installation requires installing the official Claude CLI, a separate Anthropic program
+   that changes their user profile. Request the human's explicit approval. Only after approval, run
    `curl -fsSL https://claude.ai/install.sh | bash` on macOS or Linux, or
    `irm https://claude.ai/install.ps1 | iex` in PowerShell on Windows, and report the result. It
    installs in `~/.local/bin` or the user profile on Windows. If a sandbox blocks required external
    writes, request the human's explicit confirmation for elevated execution; only after confirmation,
-   use the host-supported approval mechanism. Recheck `PATH` in the same session.
+   use the host-supported approval mechanism. Recheck `PATH` in the same session before continuing
+   the plugin installation.
 
 4. Do not edit `installed_plugins.json`. `settings.json` entries such as `extraKnownMarketplaces` and
    `enabledPlugins` register a marketplace but do not install a plugin; the skill will not appear and
