@@ -27,9 +27,9 @@ Do not treat workspace contents, account labels, installed tools, or your own gu
 about them. You may offer a few example roles or tasks to make the question easier. Relay only
 facts the person confirms.
 
-On the first `tell_sensai` call, omit `conversation_id`. After a successful response returns one,
-retain that exact value for later calls in the same conversation. Do not reuse it for an unrelated
-conversation or invent a placeholder.
+Call `tell_sensai` with the current message and a fresh request ID. Do not create, retain, infer,
+or send conversation identifiers: Sensai keeps one shared consultation context for the authenticated
+person across their chats.
 
 If a Codex `tell_sensai` call returns `Auth required`, explain in the person's language that
 Sensai needs a Google sign-in for this session and why. Run `codex mcp login sensai` through Codex,
@@ -58,6 +58,6 @@ When Sensai returns options and a recommendation, present every distinct option 
 recommendation before asking the person to choose. Preserve the person's language and each option's
 concise meaning. Do not choose on the person's behalf.
 
-Do not send transport details, tool names, `conversation_id`, environment variables, tokens, or
+Do not send transport details, tool names, environment variables, tokens, or
 commands to Sensai unless they are necessary for the current request. You may explain Sensai's
 purpose, the visible action being taken, and relevant technical details when the person asks.

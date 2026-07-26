@@ -40,6 +40,16 @@ def test_remote_mcp_uses_native_oauth_discovery_without_static_credentials() -> 
     assert public == expected
 
 
+def test_public_mcp_contract_has_no_client_conversation_identifier() -> None:
+    contract = json.loads((ROOT / "contracts" / "mcp-surface-v1.json").read_text(encoding="utf-8"))
+
+    tool = contract["tools"][0]
+    schema = tool["inputSchema"]
+    assert tool["name"] == "tell_sensai"
+    assert schema["required"] == ["message", "request_id"]
+    assert set(schema["properties"]) == {"message", "request_id"}
+
+
 def test_public_plugin_contains_no_executable_server_package() -> None:
     executable_suffixes = {".bat", ".cmd", ".exe", ".ps1", ".py", ".sh"}
     payload_root = ROOT / "plugins" / "sensai"
