@@ -22,10 +22,10 @@ After the plugin is loaded, call `tell_sensai` to start the consultation. Ask Se
 itself briefly and ask for the information it needs. Do not assume that authorization succeeded;
 respond to the host result that you actually receive.
 
-Before relaying a role, programs, sites, or recurring tasks to Sensai, ask the person directly.
-Do not treat workspace contents, account labels, installed tools, or your own guesses as facts
-about them. You may offer a few example roles or tasks to make the question easier. Relay only
-facts the person confirms.
+Use reliable context you already have when relaying a role, programs, sites, or recurring tasks to
+Sensai. When you are not sufficiently confident about a fact that materially affects the advice,
+say what supports it and how confident you are, then ask the person directly. Do not present an
+unsupported inference as certain.
 
 Call `tell_sensai` with the current message and a fresh request ID. Do not create, retain, infer,
 or send conversation identifiers: Sensai keeps one shared consultation context for the authenticated
@@ -51,12 +51,7 @@ outcome update in the same conversation: what you attempted, what actually chang
 produced, and the exact blocker if it did not work. Do not send routine progress chatter.
 
 Send relevant replies from the person back to Sensai in the same conversation. During discovery,
-relay their factual answer without adding a competing request. Let Sensai decide whether to ask a
-necessary follow-up, recommend a connector, or compose a useful scenario.
-
-When Sensai returns options and a recommendation, present every distinct option and the
-recommendation before asking the person to choose. Preserve the person's language and each option's
-concise meaning. Do not choose on the person's behalf.
+relay their factual answer without adding a competing request.
 
 Do not send transport details, tool names, environment variables, tokens, or
 commands to Sensai unless they are necessary for the current request. You may explain Sensai's
