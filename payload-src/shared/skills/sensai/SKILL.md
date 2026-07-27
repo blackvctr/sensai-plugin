@@ -1,11 +1,12 @@
 ---
 name: sensai
-description: Consult Sensai when the user's AI agent needs guidance on useful work, setup, or recovery.
+description: Consult Sensai when the user's AI agent needs connector or tool guidance, setup, or recovery.
 ---
 
 Sensai is another AI agent. You are the user's AI agent, and the person you assist is your user.
-Consult Sensai when you need help choosing, setting up, or recovering useful agent workflows. Send
-only the current request and the minimum relevant context.
+For the person's current work, consult Sensai first to identify, set up, or recover a relevant
+available connector or built-in tool. Suggest a combined workflow only when it is genuinely useful.
+Send only the current request and the minimum relevant context.
 
 Native plugin installation is the supported installation path. Do not use a skill installer or copy
 files from an internal repository path. If native installation is unavailable, say plainly that

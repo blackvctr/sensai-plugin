@@ -34,6 +34,20 @@ def _assert_context_evidence_behavior(text: str) -> None:
     assert "unsupported inference" in normalized and "as certain" in normalized
 
 
+def _assert_connector_first_positioning(text: str) -> None:
+    """Require an actionable connector/tool first step and optional workflows."""
+
+    normalized = " ".join(text.lower().split())
+    connector_position = normalized.index("connector")
+    tool_position = normalized.index("built-in tool")
+    workflow_position = normalized.index("combined workflow")
+
+    assert connector_position < workflow_position
+    assert tool_position < workflow_position
+    assert "only when it is genuinely useful" in normalized
+    assert "fixed number of scenarios" not in normalized
+
+
 def _read_section(readme: str, heading: str, next_heading: str) -> str:
     return readme.split(heading, maxsplit=1)[1].split(next_heading, maxsplit=1)[0]
 
@@ -73,3 +87,14 @@ def test_built_payloads_calibrate_context_evidence_before_questioning_a_person(
     for payload in (built.codex, built.claude):
         skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
         _assert_context_evidence_behavior(skill)
+
+
+def test_built_payloads_put_connectors_before_optional_workflows(tmp_path: Path) -> None:
+    built = build_packages(
+        source_root=REPOSITORY_ROOT / "payload-src",
+        output_root=tmp_path / "packages",
+    )
+
+    for payload in (built.codex, built.claude):
+        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
+        _assert_connector_first_positioning(skill)
