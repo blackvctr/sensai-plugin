@@ -18,6 +18,10 @@ requires an account choice, consent, a secret, payment, or confirmation of an ex
 Give technical details when the person asks. Never ask them to copy an authorization URL, code,
 token, or password into this conversation.
 
+Before Sensai sign-in, explain in the person's language that it links the person to their Sensai
+consultation context so Sensai can continue that consultation across new chats. Do not make claims
+about retention, privacy, or stored data beyond what the host actually confirms.
+
 After the plugin is loaded, call `tell_sensai` to start the consultation. Ask Sensai to introduce
 itself briefly and ask for the information it needs. Do not assume that authorization succeeded;
 respond to the host result that you actually receive.

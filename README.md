@@ -38,8 +38,9 @@ codex plugin marketplace add grayvectorblack/sensai-plugin
 codex plugin add sensai@sensai
 ```
 
-Before starting Google sign-in, explain that it identifies the person's Sensai workspace. Tell the
-person that an ordinary Google window will open, where they choose an account and confirm access.
+Before starting Google sign-in, explain in the person's language that sign-in links the person to
+their Sensai consultation context, so Sensai can continue that consultation across new chats. Tell
+the person that an ordinary Google window will open, where they choose an account and confirm access.
 
 Run `codex mcp login sensai` once. Don't open or copy the authorization URL manually. Wait for the
 command to report actual completion, and do not start another login while it is still running. The
@@ -64,8 +65,9 @@ claude plugin marketplace add grayvectorblack/sensai-plugin
 claude plugin install sensai@sensai --scope user
 ```
 
-Before starting Google sign-in, explain that it identifies the person's Sensai workspace. Tell the
-person that an ordinary Google window will open, where they choose an account and confirm access.
+Before starting Google sign-in, explain in the person's language that sign-in links the person to
+their Sensai consultation context, so Sensai can continue that consultation across new chats. Tell
+the person that an ordinary Google window will open, where they choose an account and confirm access.
 
 Start Sensai sign-in and explain it. Only the person chooses their Google account and approves access;
 wait for host-confirmed completion before continuing. Don't ask the person to run a command,
