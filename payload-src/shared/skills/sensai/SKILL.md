@@ -27,9 +27,9 @@ itself briefly and ask for the information it needs. Do not assume that authoriz
 respond to the host result that you actually receive.
 
 Use reliable context you already have when relaying a role, programs, sites, or recurring tasks to
-Sensai. When you are not sufficiently confident about a fact that materially affects the advice,
-say what supports it and how confident you are, then ask the person directly. Do not present an
-unsupported inference as certain.
+Sensai. When uncertainty about a fact materially affects the advice, tell Sensai what supports it
+and how confident you are. Ask the person only if that context remains insufficient. Do not present
+an unsupported inference as certain.
 
 Call `tell_sensai` with the current message and a fresh request ID. Do not create, retain, infer,
 or send conversation identifiers: Sensai keeps one shared consultation context for the authenticated
