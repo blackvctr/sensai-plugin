@@ -48,8 +48,25 @@ def _assert_connector_first_positioning(text: str) -> None:
     assert "fixed number of scenarios" not in normalized
 
 
+def _assert_claude_recovery_audience(text: str) -> None:
+    """Keep terminal recovery with the agent, not the person it assists."""
+
+    normalized = " ".join(text.lower().split())
+    assert "path" in normalized
+    assert "official claude cli" in normalized
+    assert "install" in normalized
+    assert "recheck" in normalized
+    assert "yourself" in normalized or "your own session" in normalized
+    assert "explicit consent" in normalized
+    assert "elevated" in normalized or "sandbox-disabling" in normalized
+    assert "never paste terminal commands for the person to run" in normalized
+    assert "ask the person to run" not in normalized
+    assert "tell the person to run" not in normalized
+
+
 def _read_section(readme: str, heading: str, next_heading: str) -> str:
-    return readme.split(heading, maxsplit=1)[1].split(next_heading, maxsplit=1)[0]
+    section = readme.split(heading, maxsplit=1)[1]
+    return section if not next_heading else section.split(next_heading, maxsplit=1)[0]
 
 
 def test_each_desktop_path_explains_why_sensai_sign_in_is_needed() -> None:
@@ -98,3 +115,17 @@ def test_built_payloads_put_connectors_before_optional_workflows(tmp_path: Path)
     for payload in (built.codex, built.claude):
         skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
         _assert_connector_first_positioning(skill)
+
+
+def test_claude_recovery_keeps_terminal_work_with_the_agents(tmp_path: Path) -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    recovery = _read_section(readme, "#### Known problems", "")
+    _assert_claude_recovery_audience(recovery)
+
+    built = build_packages(
+        source_root=REPOSITORY_ROOT / "payload-src",
+        output_root=tmp_path / "packages",
+    )
+    for payload in (built.codex, built.claude):
+        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
+        _assert_claude_recovery_audience(skill)

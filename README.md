@@ -82,6 +82,11 @@ commands, paths, plugin versions, or transport details in the person-facing stat
 
 #### Known problems
 
+Perform this recovery yourself: diagnose `PATH`, install the official Claude CLI when needed, and
+recheck it in your own session. Explain the reason to the person in their language, and ask for
+their explicit consent only before installing Claude CLI or using elevated or sandbox-disabling
+permission. Never paste terminal commands for the person to run.
+
 1. Do not use `/plugin` in the app chat. This is a known limitation
    ([anthropics/claude-code#42142](https://github.com/anthropics/claude-code/issues/42142)), not an
    installation failure. Install plugins through the real `claude` CLI. First locate it on `PATH`:

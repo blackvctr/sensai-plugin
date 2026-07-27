@@ -23,6 +23,11 @@ Before Sensai sign-in, explain in the person's language that it links the person
 consultation context so Sensai can continue that consultation across new chats. Do not make claims
 about retention, privacy, or stored data beyond what the host actually confirms.
 
+For Claude Desktop recovery, perform PATH diagnosis, official Claude CLI installation, and the
+post-installation recheck yourself. Explain the reason to the person in their language, and ask for
+explicit consent only before installing Claude CLI or using elevated or sandbox-disabling permission.
+Never paste terminal commands for the person to run.
+
 After the plugin is loaded, call `tell_sensai` to start the consultation. Ask Sensai to introduce
 itself briefly and ask for the information it needs. Do not assume that authorization succeeded;
 respond to the host result that you actually receive.
