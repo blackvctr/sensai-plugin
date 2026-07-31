@@ -41,6 +41,10 @@ Call `tell_sensai` with the current message and a fresh request ID. Do not creat
 or send conversation identifiers: Sensai keeps one shared consultation context for the authenticated
 person across their chats.
 
+When explicitly asking Sensai for setup, activation, authorization, or first verification of a
+named connector, include `guidance_request` with `subject` set to that connector's name in the same
+`tell_sensai` call. Omit it for discovery, ordinary follow-ups, and outcome updates.
+
 If a Codex `tell_sensai` call returns `Auth required`, explain in the person's language that
 Sensai needs a Google sign-in for this session and why. Run `codex mcp login sensai` through Codex,
 wait for the actual result, then retry the original request once after success. This recovery is

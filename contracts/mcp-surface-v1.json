@@ -5,6 +5,25 @@
     {
       "description": "",
       "inputSchema": {
+        "$defs": {
+          "GuidanceRequest": {
+            "additionalProperties": false,
+            "description": "A peer-declared request for one named connector's setup guidance.",
+            "properties": {
+              "subject": {
+                "maxLength": 120,
+                "minLength": 1,
+                "title": "Subject",
+                "type": "string"
+              }
+            },
+            "required": [
+              "subject"
+            ],
+            "title": "GuidanceRequest",
+            "type": "object"
+          }
+        },
         "additionalProperties": false,
         "properties": {
           "message": {
@@ -14,6 +33,17 @@
           "request_id": {
             "title": "Request Id",
             "type": "string"
+          },
+          "guidance_request": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GuidanceRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
