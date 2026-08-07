@@ -47,8 +47,14 @@ def test_public_mcp_contract_has_no_client_conversation_identifier() -> None:
     schema = tool["inputSchema"]
     assert tool["name"] == "tell_sensai"
     assert schema["required"] == ["message"]
-    assert set(schema["properties"]) == {"message", "request_id", "guidance_request"}
+    assert set(schema["properties"]) == {
+        "message",
+        "request_id",
+        "guidance_request",
+        "consultation_start",
+    }
     assert schema["properties"]["guidance_request"]["default"] is None
+    assert schema["properties"]["consultation_start"]["default"] is False
 
 
 def test_public_plugin_contains_no_executable_server_package() -> None:

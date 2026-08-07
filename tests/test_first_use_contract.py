@@ -62,6 +62,13 @@ def _assert_explicit_connector_guidance_request(text: str) -> None:
     assert "discovery" in normalized
 
 
+def _assert_explicit_consultation_start(text: str) -> None:
+    normalized = " ".join(text.lower().split())
+    assert "consultation_start: true" in normalized
+    assert "initial start call" in normalized
+    assert "ordinary follow-ups" in normalized
+
+
 def _assert_claude_recovery_audience(text: str) -> None:
     """Keep terminal recovery with the agent, not the person it assists."""
 
@@ -140,6 +147,17 @@ def test_built_payloads_send_explicit_named_connector_guidance_requests(tmp_path
     for payload in (built.codex, built.claude):
         skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
         _assert_explicit_connector_guidance_request(skill)
+
+
+def test_built_payloads_mark_the_one_initial_sensai_call(tmp_path: Path) -> None:
+    built = build_packages(
+        source_root=REPOSITORY_ROOT / "payload-src",
+        output_root=tmp_path / "packages",
+    )
+
+    for payload in (built.codex, built.claude):
+        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
+        _assert_explicit_consultation_start(skill)
 
 
 def test_claude_recovery_keeps_terminal_work_with_the_agents(tmp_path: Path) -> None:
