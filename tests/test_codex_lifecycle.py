@@ -449,8 +449,12 @@ def test_browser_guard_disables_wsl_windows_execution_paths(tmp_path: Path) -> N
     codex_acceptance._block_browser_launches(environment, tmp_path)
 
     assert "WSL_INTEROP" not in environment
-    assert all(not entry.startswith("/mnt/") for entry in environment["PATH"].split(os.pathsep))
-    assert environment["PATH"].split(os.pathsep)[0] == str(tmp_path / "browser-guard")
+    path_entries = environment["PATH"].split(os.pathsep)
+    own_guard = str(tmp_path / "browser-guard")
+    assert path_entries[0] == own_guard
+    assert "/mnt/c/Windows/System32" not in path_entries
+    assert "/mnt/d/tools" not in path_entries
+    assert all(entry == own_guard or not entry.startswith("/mnt/") for entry in path_entries)
 
 
 def test_public_acceptance_rejects_snapshot_replacement_after_verification_before_codex(
