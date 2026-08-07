@@ -106,6 +106,82 @@ else:
     executable.chmod(0o755)
 
 
+def _run_git(directory: Path, *arguments: str) -> None:
+    subprocess.run(
+        ["git", *arguments],
+        cwd=directory,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
+def _write_marketplace_revision(source: Path, version: str, *, consultation_start: bool) -> None:
+    shutil.rmtree(source / ".agents", ignore_errors=True)
+    shutil.rmtree(source / "plugins" / "sensai", ignore_errors=True)
+    shutil.copytree(REPOSITORY_ROOT / ".agents", source / ".agents")
+    plugin = source / "plugins" / "sensai"
+    shutil.copytree(REPOSITORY_ROOT / "plugins" / "sensai", plugin)
+    manifest = plugin / ".codex-plugin" / "plugin.json"
+    contents = json.loads(manifest.read_text(encoding="utf-8"))
+    contents["version"] = version
+    manifest.write_text(json.dumps(contents, indent=2) + "\n", encoding="utf-8")
+    skill = plugin / "skills" / "sensai" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    if not consultation_start:
+        text = text.replace("`consultation_start: true`. ", "")
+    skill.write_text(text, encoding="utf-8")
+
+
+def _write_updatable_fake_codex(executable: Path, log: Path) -> None:
+    fake_codex = """#!/usr/bin/env python3
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+arguments = sys.argv[1:]
+codex_home = Path(os.environ["CODEX_HOME"])
+marketplaces = codex_home / ".tmp" / "marketplaces"
+checkout = marketplaces / "sensai"
+with Path(__LOG__).open("a", encoding="utf-8") as output:
+    output.write(json.dumps({"arguments": arguments}) + "\\n")
+
+def version() -> str:
+    return json.loads(
+        (checkout / "plugins" / "sensai" / ".codex-plugin" / "plugin.json").read_text()
+    )["version"]
+
+if arguments[:3] == ["plugin", "marketplace", "add"]:
+    subprocess.run(["git", "clone", "--quiet", arguments[3], str(checkout)], check=True)
+    print(json.dumps({"marketplaceName": "sensai"}))
+elif arguments == ["plugin", "marketplace", "upgrade", "sensai", "--json"]:
+    subprocess.run(["git", "fetch", "--quiet", "origin"], cwd=checkout, check=True)
+    subprocess.run(["git", "reset", "--quiet", "--hard", "origin/main"], cwd=checkout, check=True)
+    print(json.dumps({"marketplaceName": "sensai", "version": version()}))
+elif arguments == ["plugin", "add", "sensai@sensai", "--json"]:
+    installed_root = codex_home / "plugins" / "cache" / "sensai" / "sensai"
+    shutil.rmtree(installed_root, ignore_errors=True)
+    installed = installed_root / version()
+    installed.parent.mkdir(parents=True)
+    shutil.copytree(checkout / "plugins" / "sensai", installed)
+    print(json.dumps({"version": version(), "installedPath": str(installed)}))
+elif arguments == ["plugin", "list", "--json"]:
+    installed_root = codex_home / "plugins" / "cache" / "sensai" / "sensai"
+    versions = sorted(path for path in installed_root.iterdir() if path.is_dir())
+    print(json.dumps([
+        {"name": "sensai", "version": path.name, "installedPath": str(path)}
+        for path in versions
+    ]))
+else:
+    raise SystemExit("unexpected command: " + repr(arguments))
+"""
+    executable.write_text(fake_codex.replace("__LOG__", repr(str(log))), encoding="utf-8")
+    executable.chmod(0o755)
+
+
 def test_codex_profile_fingerprint_covers_complete_tree_and_resolved_symlink(
     tmp_path: Path,
 ) -> None:
@@ -219,6 +295,83 @@ def test_codex_lifecycle_uses_exact_read_only_marketplace_and_isolated_profile(
         path.relative_to(release_bundle).as_posix(): path.read_bytes()
         for path in release_bundle.iterdir()
     }
+
+
+def test_codex_marketplace_upgrade_reinstalls_sensai_021_in_an_isolated_profile(
+    tmp_path: Path,
+) -> None:
+    """A previously installed 0.2.0 must become the shipped 0.2.1 after upgrade."""
+    executable = tmp_path / "codex"
+    log = tmp_path / "commands.jsonl"
+    _write_updatable_fake_codex(executable, log)
+    profile = tmp_path / "codex-home"
+    profile.mkdir()
+    source = tmp_path / "local-sensai-marketplace"
+    source.mkdir()
+    _write_marketplace_revision(source, "0.2.0", consultation_start=False)
+    _run_git(source, "init", "--quiet", "--initial-branch=main")
+    _run_git(source, "config", "user.email", "test@example.invalid")
+    _run_git(source, "config", "user.name", "Sensai lifecycle test")
+    _run_git(source, "add", ".")
+    _run_git(source, "commit", "--quiet", "-m", "Sensai 0.2.0")
+
+    environment = {**os.environ, "CODEX_HOME": str(profile)}
+
+    def call(*arguments: str) -> object:
+        completed = subprocess.run(
+            [str(executable), *arguments, "--json"],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return json.loads(completed.stdout)
+
+    assert call("plugin", "marketplace", "add", str(source)) == {"marketplaceName": "sensai"}
+    assert call("plugin", "add", "sensai@sensai") == {
+        "version": "0.2.0",
+        "installedPath": str(profile / "plugins" / "cache" / "sensai" / "sensai" / "0.2.0"),
+    }
+    assert call("plugin", "list") == [
+        {
+            "name": "sensai",
+            "version": "0.2.0",
+            "installedPath": str(profile / "plugins" / "cache" / "sensai" / "sensai" / "0.2.0"),
+        }
+    ]
+
+    _write_marketplace_revision(source, "0.2.1", consultation_start=True)
+    _run_git(source, "add", ".")
+    _run_git(source, "commit", "--quiet", "-m", "Sensai 0.2.1")
+
+    assert call("plugin", "marketplace", "upgrade", "sensai") == {
+        "marketplaceName": "sensai",
+        "version": "0.2.1",
+    }
+    installed = profile / "plugins" / "cache" / "sensai" / "sensai" / "0.2.1"
+    assert call("plugin", "add", "sensai@sensai") == {
+        "version": "0.2.1",
+        "installedPath": str(installed),
+    }
+    assert call("plugin", "list") == [
+        {"name": "sensai", "version": "0.2.1", "installedPath": str(installed)}
+    ]
+    assert "consultation_start: true" in (
+        installed / "skills" / "sensai" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert not (profile / "plugins" / "cache" / "sensai" / "sensai" / "0.2.0").exists()
+    logged_arguments = [
+        json.loads(line)["arguments"] for line in log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert logged_arguments == [
+        ["plugin", "marketplace", "add", str(source), "--json"],
+        ["plugin", "add", "sensai@sensai", "--json"],
+        ["plugin", "list", "--json"],
+        ["plugin", "marketplace", "upgrade", "sensai", "--json"],
+        ["plugin", "add", "sensai@sensai", "--json"],
+        ["plugin", "list", "--json"],
+    ]
 
 
 def test_public_acceptance_context_keeps_profile_alive_and_cleans_after_body_failure(
