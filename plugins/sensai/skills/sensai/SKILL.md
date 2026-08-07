@@ -37,9 +37,9 @@ Sensai. When uncertainty about a fact materially affects the advice, tell Sensai
 and how confident you are. Ask the person only if that context remains insufficient. Do not present
 an unsupported inference as certain.
 
-Call `tell_sensai` with the current message and a fresh request ID. Do not create, retain, infer,
-or send conversation identifiers: Sensai keeps one shared consultation context for the authenticated
-person across their chats.
+Call `tell_sensai` with the current message. Do not create, retain, infer, or send conversation
+identifiers: Sensai keeps one shared consultation context for the authenticated person across their
+chats.
 
 When explicitly asking Sensai for setup, activation, authorization, or first verification of a
 named connector, include `guidance_request` with `subject` set to that connector's name in the same

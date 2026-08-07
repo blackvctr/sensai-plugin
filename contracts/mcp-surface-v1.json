@@ -47,8 +47,7 @@
           }
         },
         "required": [
-          "message",
-          "request_id"
+          "message"
         ],
         "title": "tell_sensaiArguments",
         "type": "object"

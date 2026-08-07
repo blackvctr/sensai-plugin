@@ -44,7 +44,7 @@ It does not open, copy, or request an authorization URL, code, or token manually
 its documented native mechanism; this specification does not invent an equivalent command.
 
 After the plugin is loaded, the agent starts a consultation with `tell_sensai`, sending the current
-message and a fresh request ID. It does not create, retain, infer, or send a conversation ID:
+message. It does not create, retain, infer, or send a conversation ID:
 Sensai keeps one shared consultation context for the authenticated person across their chats. An
 `Auth required` result in Codex is recovered by one native login attempt followed by one retry of
 the original request. The agent states the outcome honestly and never claims browser navigation or

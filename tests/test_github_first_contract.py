@@ -46,7 +46,7 @@ def test_public_mcp_contract_has_no_client_conversation_identifier() -> None:
     tool = contract["tools"][0]
     schema = tool["inputSchema"]
     assert tool["name"] == "tell_sensai"
-    assert schema["required"] == ["message", "request_id"]
+    assert schema["required"] == ["message"]
     assert set(schema["properties"]) == {"message", "request_id", "guidance_request"}
     assert schema["properties"]["guidance_request"]["default"] is None
 
