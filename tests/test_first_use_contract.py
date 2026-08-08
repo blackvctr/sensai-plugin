@@ -66,6 +66,13 @@ def _assert_initial_sensai_call(text: str) -> None:
     normalized = " ".join(text.lower().split())
     assert "call `tell_sensai` to start the consultation" in normalized
     assert "consultation_start" not in normalized
+    assert "call `tell_sensai` with the current message" not in normalized
+    assert "never send the person's technical sensai launch command" in normalized
+    assert "run sensai" in normalized
+    assert "запусти sensai" in normalized
+    assert "explicitly stated work facts" in normalized
+    assert "exactly once more with a new request id" in normalized
+    assert "do not make a third automatic call" in normalized
 
 
 def _assert_claude_recovery_audience(text: str) -> None:

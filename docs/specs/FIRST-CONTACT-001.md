@@ -43,8 +43,13 @@ For Codex, the agent runs `codex mcp login sensai` and waits for the command's a
 It does not open, copy, or request an authorization URL, code, or token manually. Claude uses only
 its documented native mechanism; this specification does not invent an equivalent command.
 
-After the plugin is loaded, the agent starts a consultation with `tell_sensai`, sending the current
-message. It does not create, retain, infer, or send a conversation ID:
+After the plugin is loaded, the agent starts a consultation with `tell_sensai`, but does not send a
+technical launch command such as `Run Sensai` or `Запусти Sensai`. It sends only work facts and the
+actual request explicitly stated by the person; it does not add inferred or workspace-derived facts.
+If the launch command contained nothing else, it sends a neutral continuation instead. When the
+first MCP result is Sensai's exact fixed onboarding reply and the launch message included explicit
+facts or a request, the agent makes one fresh-ID follow-up with only that information. It does not
+make a third automatic call. The agent does not create, retain, infer, or send a conversation ID:
 Sensai keeps one shared consultation context for the authenticated person across their chats. An
 `Auth required` result in Codex is recovered by one native login attempt followed by one retry of
 the original request. The agent states the outcome honestly and never claims browser navigation or
