@@ -28,9 +28,7 @@ post-installation recheck yourself. Explain the reason to the person in their la
 explicit consent only before installing Claude CLI or using elevated or sandbox-disabling permission.
 Never paste terminal commands for the person to run.
 
-After the plugin is loaded, call `tell_sensai` to start the consultation with
-`consultation_start: true`. Ask Sensai to introduce itself briefly and ask for the information it
-needs. Use this flag only for that initial start call, not ordinary follow-ups. Do not assume that
+After the plugin is loaded, call `tell_sensai` to start the consultation. Do not assume that
 authorization succeeded; respond to the host result that you actually receive.
 
 Use reliable context you already have when relaying a role, programs, sites, or recurring tasks to

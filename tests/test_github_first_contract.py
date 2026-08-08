@@ -51,10 +51,8 @@ def test_public_mcp_contract_has_no_client_conversation_identifier() -> None:
         "message",
         "request_id",
         "guidance_request",
-        "consultation_start",
     }
     assert schema["properties"]["guidance_request"]["default"] is None
-    assert schema["properties"]["consultation_start"]["default"] is False
 
 
 def test_public_plugin_contains_no_executable_server_package() -> None:

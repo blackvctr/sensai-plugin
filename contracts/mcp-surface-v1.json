@@ -44,11 +44,6 @@
               }
             ],
             "default": null
-          },
-          "consultation_start": {
-            "default": false,
-            "title": "Consultation Start",
-            "type": "boolean"
           }
         },
         "required": [
