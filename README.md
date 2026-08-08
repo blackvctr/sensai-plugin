@@ -56,8 +56,7 @@ The Sensai plugin is installed. To start using it, open a [new chat](codex://new
 
 For another language, translate both the visible sentence and `Run` inside the link before URL-encoding
 the prompt. Keep `[@sensai](plugin://sensai@sensai)` unchanged. The link only fills the new-chat
-composer; it does not send the message. Don't include MCP, commands, paths, plugin versions, or
-transport details in the person-facing status update.
+composer; it does not send the message.
 
 ### Claude Desktop
 
@@ -77,8 +76,7 @@ browser account selection and consent.
 
 After sign-in succeeds, run `/reload-plugins` once and invoke Sensai in the same session. Tell the
 person in their language that Sensai is ready and has started. Don't ask them to greet Sensai manually
-or start another chat unless Claude Desktop says the reload could not be applied. Don't include MCP,
-commands, paths, plugin versions, or transport details in the person-facing status update.
+or start another chat unless Claude Desktop says the reload could not be applied.
 
 #### Known problems
 
