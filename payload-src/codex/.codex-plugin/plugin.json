@@ -1,6 +1,6 @@
 {
   "name": "sensai",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Advises an AI agent with installation guidance, problem-solving help, and transparent reference material.",
   "author": {
     "name": "Sergey Skripko",
