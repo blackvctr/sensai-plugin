@@ -118,14 +118,20 @@ def _read_section(readme: str, heading: str, next_heading: str) -> str:
     return section if not next_heading else section.split(next_heading, maxsplit=1)[0]
 
 
-def test_each_desktop_path_explains_why_sensai_sign_in_is_needed() -> None:
+def test_readme_has_one_general_auth_explanation_and_native_login_per_host() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
 
+    general_steps = _read_section(readme, "### General steps", "### ChatGPT Desktop")
     chatgpt_path = _read_section(readme, "### ChatGPT Desktop", "### Claude Desktop")
     claude_path = _read_section(readme, "### Claude Desktop", "#### Known problems")
 
-    _assert_auth_explanation(chatgpt_path)
-    _assert_auth_explanation(claude_path)
+    general = " ".join(general_steps.lower().split())
+    assert "google sign-in" in general
+    assert "relevant context" in general
+    assert "new chats" in general
+    assert "chooses their google account" in general
+    assert "codex mcp login sensai" in chatgpt_path
+    assert "claude mcp login plugin:sensai:sensai" in claude_path
 
 
 def test_built_codex_and_claude_payloads_share_the_auth_explanation(tmp_path: Path) -> None:

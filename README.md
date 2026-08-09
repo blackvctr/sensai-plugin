@@ -17,18 +17,22 @@ Install Sensai https://github.com/grayvectorblack/sensai-plugin
 
 ## Installation (AI agent part)
 
-Here and below, speak to the person in their language and make every step convenient for them. English may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening in plain language and adapt your terminology to their level. Treat the person's time as especially valuable: don't ask them to perform manually anything you can do yourself. Avoid technical terms and unnecessary interface clicks. Take care of every step you can; leave the person only actions that need their own account choice or approval.
+Here and below, speak to the person in their language and make every step convenient for them. English may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening in plain language and adapt your terminology to their level. Treat the person's time as especially valuable: don't ask them to perform manually anything you can do yourself. Avoid technical terms and unnecessary interface clicks. Take care of every step you can; leave the person only actions that need their own account choice or approval. We want to respect the user time and make the plugin use comfortable for them, not stressful, without necessity to know things like PATH and other technical stuff. 
+
+### General steps
+
+1. Install the plugin yourself.
+2. Before Google sign-in, briefly explain that it lets Sensai understand who it is speaking with and continue the conversation with relevant context, so the consultation carries over into new chats. Say that an ordinary Google window will open, where they choose an account and confirm access.
+3. After that explanation, run the host-specific login command below once and open the sign-in page in the person's default browser. Wait for the command to report actual completion; don't start a second login while one is running. The person only chooses their Google account and approves access. Everything else is yours: the commands, the URL, any code, token, or credential, and confirming that sign-in finished.
+4. After authorization, start Sensai using the host-specific steps below.
 
 ### ChatGPT Desktop
 
 ```bash
 codex plugin marketplace add grayvectorblack/sensai-plugin
 codex plugin add sensai@sensai
+codex mcp login sensai
 ```
-
-Before starting Google sign-in, explain in the person's language that sign-in links the person to their Sensai consultation context, so Sensai can continue that consultation across new chats. Tell the person that an ordinary Google window will open, where they choose an account and confirm access.
-
-Run `codex mcp login sensai` once. Don't open or copy the authorization URL manually. Wait for the command to report actual completion, and do not start another login while it is still running. The person handles only Google's browser account selection and consent; don't ask them to run a command, copy a URL, code, token, or credential, or report that they are done.
 
 After sign-in succeeds, give the person one complete localized sentence. For English, use exactly:
 
@@ -43,13 +47,22 @@ For another language, translate both the visible sentence and `Run` inside the l
 ```bash
 claude plugin marketplace add grayvectorblack/sensai-plugin
 claude plugin install sensai@sensai --scope user
+claude mcp login plugin:sensai:sensai
 ```
 
-Before starting Google sign-in, explain in the person's language that sign-in links the person to their Sensai consultation context, so Sensai can continue that consultation across new chats. Tell the person that an ordinary Google window will open, where they choose an account and confirm access.
+After sign-in succeeds, confirm the plugin is registered with `claude mcp get plugin:sensai:sensai`.
 
-Start Sensai sign-in and explain it. Only the person chooses their Google account and approves access; wait for host-confirmed completion before continuing. Don't ask the person to run a command, copy a URL, code, token, or credential, or report that they are done. The person handles only Google's browser account selection and consent.
+Then open the new session yourself, using the command for the person's operating system:
 
-After sign-in succeeds, run `/reload-plugins` once and invoke Sensai in the same session. Tell the person in their language that Sensai is ready and has started. Don't ask them to greet Sensai manually or start another chat unless Claude Desktop says the reload could not be applied.
+```bash
+start "" "claude://code/new?q=%2Fsensai%3Asensai"    # Windows
+open "claude://code/new?q=%2Fsensai%3Asensai"        # macOS
+xdg-open "claude://code/new?q=%2Fsensai%3Asensai"    # Linux
+```
+
+A new Claude Code session opens with `/sensai:sensai` already in its composer. The person clicks nothing and types nothing.
+
+Then tell the person, in one complete localized sentence, that Sensai is installed and has just opened in a new chat, and that they only need to press Enter there if the prepared message has not been sent on its own.
 
 #### Known problems
 

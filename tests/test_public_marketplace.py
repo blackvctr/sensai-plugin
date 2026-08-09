@@ -51,7 +51,7 @@ def test_public_repository_is_a_ready_codex_marketplace(tmp_path: Path) -> None:
                 "name": "sensai",
                 "source": "./plugins/sensai",
                 "description": "Practical guidance for an AI agent.",
-                "version": "0.2.6",
+                "version": "0.2.7",
                 "category": "productivity",
             }
         ],

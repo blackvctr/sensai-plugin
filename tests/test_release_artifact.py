@@ -130,12 +130,12 @@ def test_pre2e_r01_builds_and_independently_verifies_versioned_release(
     assert _files(first) == _files(second)
     assert set(_files(first)) == {
         "release.json",
-        "sensai-0.2.6-claude-marketplace.zip",
-        "sensai-0.2.6-codex-marketplace.zip",
+        "sensai-0.2.7-claude-marketplace.zip",
+        "sensai-0.2.7-codex-marketplace.zip",
     }
 
     metadata = _json(first / "release.json")
-    assert metadata["release_version"] == "0.2.6"
+    assert metadata["release_version"] == "0.2.7"
     assert metadata["mcp_url"] == MCP_URL
     assert metadata["mcp_contract_version"] == "1"
     assert len(metadata["mcp_schema_sha256"]) == 64
@@ -168,7 +168,7 @@ def test_pre2e_r01_builds_and_independently_verifies_versioned_release(
         "mcp_schema_sha256": metadata["mcp_schema_sha256"],
         "mcp_url": MCP_URL,
         "platforms": ["claude", "codex"],
-        "release_version": "0.2.6",
+        "release_version": "0.2.7",
         "verified": True,
     }
 
