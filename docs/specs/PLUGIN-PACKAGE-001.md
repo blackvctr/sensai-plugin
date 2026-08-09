@@ -2,15 +2,11 @@
 
 ## Purpose
 
-Build two public, independently installable Sensai plugin payloads from one reviewed source tree:
-one for Codex and one for Claude. Packaging must be reproducible and fail closed when an
-unreviewed file appears.
+Build two public, independently installable Sensai plugin payloads from one reviewed source tree: one for Codex and one for Claude. Packaging must be reproducible and fail closed when an unreviewed file appears.
 
 ## Boundaries
 
-This specification covers source layout, generated file layout, deterministic hashing, strict
-source inclusion, and payload isolation. It does not implement the builder, run Codex or Claude
-CLIs, publish a marketplace, contact the MCP server, or test authentication.
+This specification covers source layout, generated file layout, deterministic hashing, strict source inclusion, and payload isolation. It does not implement the builder, run Codex or Claude CLIs, publish a marketplace, contact the MCP server, or test authentication.
 
 ## Source Layout
 
@@ -25,11 +21,7 @@ payload-src/
   claude/.claude-plugin/plugin.json
 ```
 
-The builder code lives under `src/sensai_plugin/`; tests and documentation remain repository-only.
-The four paths above form an exact allowlist, not a glob. Every path must be a regular file reached
-through regular directories. A missing file, extra file or directory content, symlink, or path that
-resolves outside `payload-src/` is an error until the allowlist and this specification are
-deliberately changed.
+The builder code lives under `src/sensai_plugin/`; tests and documentation remain repository-only. The four paths above form an exact allowlist, not a glob. Every path must be a regular file reached through regular directories. A missing file, extra file or directory content, symlink, or path that resolves outside `payload-src/` is an error until the allowlist and this specification are deliberately changed.
 
 ## Generated Contract
 
@@ -49,12 +41,7 @@ packages/
     MANIFEST.sha256
 ```
 
-The platform manifest is copied only to its platform payload. The shared MCP configuration and
-human instructions are byte-identical in both payloads and originate only from `payload-src/shared`.
-`MANIFEST.sha256` contains every other regular payload file, sorted by POSIX relative path, as
-`<lowercase sha256><two spaces><relative path>\n`. It does not list itself. No generated content
-contains timestamps, source paths, random values, host-specific values, or machine-dependent line
-endings.
+The platform manifest is copied only to its platform payload. The shared MCP configuration and human instructions are byte-identical in both payloads and originate only from `payload-src/shared`. `MANIFEST.sha256` contains every other regular payload file, sorted by POSIX relative path, as `<lowercase sha256><two spaces><relative path>\n`. It does not list itself. No generated content contains timestamps, source paths, random values, host-specific values, or machine-dependent line endings.
 
 ## Requirements
 
@@ -81,9 +68,7 @@ endings.
 
 ## Failure Rules
 
-The builder must fail before publishing either payload when source validation, copying, hashing, or
-post-build isolation validation fails. Partial output is not an accepted build. There is no fallback
-that drops unknown files, rewrites unsafe references, or reuses stale output.
+The builder must fail before publishing either payload when source validation, copying, hashing, or post-build isolation validation fails. Partial output is not an accepted build. There is no fallback that drops unknown files, rewrites unsafe references, or reuses stale output.
 
 ## Evidence Map
 

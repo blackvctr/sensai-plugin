@@ -2,10 +2,7 @@
 
 ## User journey
 
-The person gives Codex or Claude Code one natural request containing only the public GitHub
-repository. The agent reads the repository README, identifies its platform, and installs Sensai
-through that platform's native marketplace and plugin commands. No bootstrap script, invitation URL,
-one-time code, or manually stored bearer token is part of installation.
+The person gives Codex or Claude Code one natural request containing only the public GitHub repository. The agent reads the repository README, identifies its platform, and installs Sensai through that platform's native marketplace and plugin commands. No bootstrap script, invitation URL, one-time code, or manually stored bearer token is part of installation.
 
 ## Contract
 
@@ -21,12 +18,8 @@ one-time code, or manually stored bearer token is part of installation.
 
 ## Server dependency
 
-The plugin uses native OAuth discovery, but its documentation does not claim that the production
-switch has happened. Publication is gated on the MCP server exposing the required OAuth metadata
-and authorization endpoints. Without them, an unauthenticated request fails clearly.
+The plugin uses native OAuth discovery, but its documentation does not claim that the production switch has happened. Publication is gated on the MCP server exposing the required OAuth metadata and authorization endpoints. Without them, an unauthenticated request fails clearly.
 
 ## Evidence
 
-`tests/test_github_first_contract.py` covers the public installation and authorization boundary.
-`tests/test_public_marketplace.py` independently rebuilds and compares the committed public bytes.
-The package tests cover the exact source allowlist, secret rejection, path isolation, and hashes.
+`tests/test_github_first_contract.py` covers the public installation and authorization boundary. `tests/test_public_marketplace.py` independently rebuilds and compares the committed public bytes. The package tests cover the exact source allowlist, secret rejection, path isolation, and hashes.

@@ -2,19 +2,13 @@
 
 ## Purpose
 
-Prove that one exact release bundle built by the current release builder can be independently
-verified, installed through Claude Code's local marketplace flow, and discovered as an
-MCP-providing plugin without changing the user's real Claude profile.
+Prove that one exact release bundle built by the current release builder can be independently verified, installed through Claude Code's local marketplace flow, and discovered as an MCP-providing plugin without changing the user's real Claude profile.
 
 ## Acceptance
 
-`sensai_plugin.claude_acceptance.installed_claude_plugin` is the stable public acceptance context.
-It yields the exact installed selector, version, MCP URL, and still-live isolated profile. The
-command-line script is only a wrapper around that API, and external acceptance tests must import
-the public module rather than a script's private helpers.
+`sensai_plugin.claude_acceptance.installed_claude_plugin` is the stable public acceptance context. It yields the exact installed selector, version, MCP URL, and still-live isolated profile. The command-line script is only a wrapper around that API, and external acceptance tests must import the public module rather than a script's private helpers.
 
-`scripts/test_claude_lifecycle.py --bundle <release-directory>` uses the locally installed Claude
-Code and performs one bounded lifecycle:
+`scripts/test_claude_lifecycle.py --bundle <release-directory>` uses the locally installed Claude Code and performs one bounded lifecycle:
 
 1. Copy the regular bundle files once into a private read-only snapshot, then invoke
    `scripts/verify_release.py` against that snapshot in a separate process. The snapshot binds its
@@ -44,18 +38,11 @@ Code and performs one bounded lifecycle:
    bounded depth, entry count, and file size. User history, projects, sessions, and unrelated
    cache subtrees are never recursively read, and a limit violation fails closed.
 
-The lifecycle never rebuilds a release, installs an archive directly, modifies extracted release
-files, or uses the user's Claude profile. A tampered bundle fails before the first Claude command.
-Cleanup runs after a caller error and reports both the caller error and any cleanup failure.
-The temporary profile is rejected before any Claude command when it overlaps, is nested in, or contains
-any configured real Claude profile boundary, including the config root, plugin cache, secure storage,
-home-level configuration, XDG locations, and repository-local `.claude` state.
+The lifecycle never rebuilds a release, installs an archive directly, modifies extracted release files, or uses the user's Claude profile. A tampered bundle fails before the first Claude command. Cleanup runs after a caller error and reports both the caller error and any cleanup failure. The temporary profile is rejected before any Claude command when it overlaps, is nested in, or contains any configured real Claude profile boundary, including the config root, plugin cache, secure storage, home-level configuration, XDG locations, and repository-local `.claude` state.
 
 ## Claim Boundary
 
-This proves local marketplace installation and MCP configuration discovery. `claude mcp get` may
-report endpoint health, but this acceptance does not claim authentication, model behavior, or a
-successful MCP tool call.
+This proves local marketplace installation and MCP configuration discovery. `claude mcp get` may report endpoint health, but this acceptance does not claim authentication, model behavior, or a successful MCP tool call.
 
 Run from the plugin repository after building a bundle once:
 
