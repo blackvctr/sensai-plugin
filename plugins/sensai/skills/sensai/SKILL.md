@@ -57,9 +57,11 @@ named connector, include `guidance_request` with `subject` set to that connector
 
 If a Codex `tell_sensai` call returns `Auth required`, explain in the person's language that
 Sensai needs a Google sign-in for this session and why. Run `codex mcp login sensai` through Codex,
-wait for the actual result, then retry the original request once after success. This recovery is
-Codex-specific; do not invent a Claude command. If it fails, say plainly that Sensai is temporarily
-unavailable. Do not claim that a browser opened or access was granted until the host confirms it.
+wait for the actual result, then reconnect or reload the Sensai MCP client before retrying the
+original request once. If the host cannot reconnect it, start a new Codex chat or session and retry
+there. This recovery is Codex-specific; do not invent a Claude command. If it fails, say plainly
+that Sensai is temporarily unavailable. Do not claim that a browser opened or access was granted
+until the host confirms it.
 
 Use concise English with Sensai when it preserves meaning and saves tokens. Speak to the person in
 their language, translating Sensai's guidance as needed. Sensai addresses you, not the person, so

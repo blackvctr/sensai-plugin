@@ -75,6 +75,20 @@ def _assert_initial_sensai_call(text: str) -> None:
     assert "do not make a third automatic call" in normalized
 
 
+def _assert_codex_auth_recovery_reconnects_before_retry(text: str) -> None:
+    """Codex login refreshes credentials, not an already-open MCP connection."""
+
+    normalized = " ".join(text.lower().split())
+    login_position = normalized.index("codex mcp login sensai")
+    reconnect_position = normalized.index("reconnect or reload the sensai mcp client")
+    retry_position = normalized.index("before retrying the original request once")
+
+    assert login_position < reconnect_position < retry_position
+    assert "start a new codex chat or session" in normalized
+    assert "codex-specific" in normalized
+    assert "do not invent a claude command" in normalized
+
+
 def _assert_claude_recovery_audience(text: str) -> None:
     """Keep terminal recovery with the agent, not the person it assists."""
 
@@ -170,6 +184,17 @@ def test_built_payloads_start_sensai_without_a_client_control_flag(tmp_path: Pat
     for payload in (built.codex, built.claude):
         skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
         _assert_initial_sensai_call(skill)
+
+
+def test_built_payloads_reconnect_codex_mcp_after_auth_recovery(tmp_path: Path) -> None:
+    built = build_packages(
+        source_root=REPOSITORY_ROOT / "payload-src",
+        output_root=tmp_path / "packages",
+    )
+
+    for payload in (built.codex, built.claude):
+        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
+        _assert_codex_auth_recovery_reconnects_before_retry(skill)
 
 
 def test_claude_recovery_keeps_terminal_work_with_the_agents(tmp_path: Path) -> None:
