@@ -51,10 +51,10 @@ first MCP result is Sensai's exact fixed onboarding reply and the launch message
 facts or a request, the agent makes one fresh-ID follow-up with only that information. It does not
 make a third automatic call. The agent does not create, retain, infer, or send a conversation ID:
 Sensai keeps one shared consultation context for the authenticated person across their chats. An
-`Auth required` result in Codex is recovered by one native login attempt, then reconnecting or
-reloading the Sensai MCP client before one retry of the original request. If Codex cannot reconnect
-the client, the agent starts a new Codex chat or session and retries there. The agent states the
-outcome honestly and never claims browser navigation or access that the host did not confirm.
+`Auth required` result in Codex is recovered by one native login attempt, then restarting Codex
+before one retry of the original request. The agent does not retry through the already-open client
+session. The agent states the outcome honestly and never claims browser navigation or access that
+the host did not confirm.
 
 ## Discovery and recommendations
 
