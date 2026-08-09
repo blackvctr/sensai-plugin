@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tomllib
 from pathlib import Path
 
 from sensai_plugin.package_builder import build_packages
@@ -50,7 +51,7 @@ def test_public_repository_is_a_ready_codex_marketplace(tmp_path: Path) -> None:
                 "name": "sensai",
                 "source": "./plugins/sensai",
                 "description": "Practical guidance for an AI agent.",
-                "version": "0.2.4",
+                "version": "0.2.5",
                 "category": "productivity",
             }
         ],
@@ -90,6 +91,30 @@ def test_committed_plugin_manifest_is_computed_from_packaged_files() -> None:
     )
 
     assert manifest == expected
+
+
+def test_plugin_version_is_consistent_across_build_and_public_marketplaces() -> None:
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    build_version = project["project"]["version"]
+    assert isinstance(build_version, str)
+
+    codex = json.loads(
+        (REPOSITORY_ROOT / "payload-src/codex/.codex-plugin/plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    claude = json.loads(
+        (REPOSITORY_ROOT / "payload-src/claude/.claude-plugin/plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    marketplace = json.loads(
+        (REPOSITORY_ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8")
+    )
+
+    assert codex["version"] == build_version
+    assert claude["version"] == build_version
+    assert marketplace["plugins"][0]["version"] == build_version
 
 
 def test_both_platform_manifests_expose_the_public_source_repository(tmp_path: Path) -> None:

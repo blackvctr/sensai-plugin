@@ -259,7 +259,7 @@ def test_real_claude_cli_installs_exact_verified_release(release_bundle: Path) -
 
     assert completed.returncode == 0, completed.stderr
     assert "PASS selector=sensai@sensai-local" in completed.stdout
-    assert "PASS version=0.2.4" in completed.stdout
+    assert "PASS version=0.2.5" in completed.stdout
     assert f"PASS mcp={MCP_URL}" in completed.stdout
     assert set(temporary_root.glob("sensai-claude-profile-*")) == before
 
@@ -306,7 +306,7 @@ if arguments[:3] == ["plugin", "marketplace", "add"]:
 elif arguments[:2] == ["plugin", "install"]:
     assert arguments[2:] == ["sensai@sensai-local", "--scope", "user"]
     marketplace = Path((config / "marketplace.txt").read_text(encoding="utf-8"))
-    installed = cache / "sensai" / "0.2.4"
+    installed = cache / "sensai" / "0.2.5"
     installed.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(marketplace / "plugins" / "sensai", installed)
     if __INSTALLED_PAYLOAD__ == "changed":
@@ -317,10 +317,10 @@ elif arguments[:2] == ["plugin", "install"]:
         installed.chmod(0o700)
         (installed / "unexpected-link").symlink_to("SKILL.md")
 elif arguments == ["plugin", "list", "--json"]:
-    installed = cache / "sensai" / "0.2.4"
+    installed = cache / "sensai" / "0.2.5"
     print(json.dumps([{
         "id": "sensai@sensai-local",
-        "version": "0.2.4",
+        "version": "0.2.5",
         "scope": "user",
         "enabled": True,
         "installPath": str(installed),
@@ -365,7 +365,7 @@ def test_public_context_rejects_tampering_before_invoking_claude(
     _use_empty_real_claude_profile(monkeypatch, tmp_path)
     bundle = tmp_path / "release"
     shutil.copytree(release_bundle, bundle)
-    archive = bundle / "sensai-0.2.4-claude-marketplace.zip"
+    archive = bundle / "sensai-0.2.5-claude-marketplace.zip"
     archive.write_bytes(archive.read_bytes() + b"tampered")
     marker = tmp_path / "claude-was-invoked"
     executable = tmp_path / "claude"
@@ -423,7 +423,7 @@ def test_public_context_keeps_profile_alive_and_cleans_after_caller_failure(
     ):
         assert isinstance(installed, InstalledClaudePlugin)
         assert installed.selector == "sensai@sensai-local"
-        assert installed.version == "0.2.4"
+        assert installed.version == "0.2.5"
         assert installed.mcp_url == MCP_URL
         assert installed.profile.exists()
         assert (installed.profile / "plugin-cache").is_dir()
