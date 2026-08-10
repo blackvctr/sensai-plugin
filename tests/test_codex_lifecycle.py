@@ -89,10 +89,10 @@ if arguments[:3] == ["plugin", "marketplace", "add"]:
 elif arguments[:2] == ["plugin", "add"]:
     assert arguments[2] == "sensai@sensai-local"
     marketplace = Path(json.loads(Path(__LOG__).read_text().splitlines()[0])["arguments"][3])
-    installed = codex_home / "plugins" / "cache" / "sensai-local" / "sensai" / "0.2.8"
+    installed = codex_home / "plugins" / "cache" / "sensai-local" / "sensai" / "0.2.9"
     installed.parent.mkdir(parents=True)
     shutil.copytree(marketplace / "plugins" / "sensai", installed)
-    print(json.dumps({"version": "0.2.8", "installedPath": str(installed)}))
+    print(json.dumps({"version": "0.2.9", "installedPath": str(installed)}))
 elif arguments == ["mcp", "list", "--json"]:
     transport = {"type": "streamable_http", "url": __URL__}
     print(json.dumps([{"name": "sensai", "transport": transport}]))
@@ -229,7 +229,7 @@ def test_codex_lifecycle_rejects_tampering_before_invoking_codex(
 ) -> None:
     bundle = tmp_path / "release"
     shutil.copytree(release_bundle, bundle)
-    archive = bundle / "sensai-0.2.8-codex-marketplace.zip"
+    archive = bundle / "sensai-0.2.9-codex-marketplace.zip"
     archive.write_bytes(archive.read_bytes() + b"tampered")
 
     marker = tmp_path / "codex-was-invoked"
@@ -274,7 +274,7 @@ def test_codex_lifecycle_uses_exact_read_only_marketplace_and_isolated_profile(
 
     assert completed.returncode == 0, completed.stderr
     assert "PASS selector=sensai@sensai-local" in completed.stdout
-    assert "PASS version=0.2.8" in completed.stdout
+    assert "PASS version=0.2.9" in completed.stdout
     assert f"PASS mcp={MCP_URL}" in completed.stdout
     entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert [entry["arguments"] for entry in entries] == [
@@ -295,7 +295,7 @@ def test_codex_lifecycle_uses_exact_read_only_marketplace_and_isolated_profile(
 def test_codex_marketplace_upgrade_reinstalls_sensai_023_in_an_isolated_profile(
     tmp_path: Path,
 ) -> None:
-    """A previously installed 0.2.2 must become the shipped 0.2.8 after upgrade."""
+    """A previously installed 0.2.2 must become the shipped 0.2.9 after upgrade."""
     executable = tmp_path / "codex"
     log = tmp_path / "commands.jsonl"
     _write_updatable_fake_codex(executable, log)
@@ -336,21 +336,21 @@ def test_codex_marketplace_upgrade_reinstalls_sensai_023_in_an_isolated_profile(
         }
     ]
 
-    _write_marketplace_revision(source, "0.2.8")
+    _write_marketplace_revision(source, "0.2.9")
     _run_git(source, "add", ".")
-    _run_git(source, "commit", "--quiet", "-m", "Sensai 0.2.8")
+    _run_git(source, "commit", "--quiet", "-m", "Sensai 0.2.9")
 
     assert call("plugin", "marketplace", "upgrade", "sensai") == {
         "marketplaceName": "sensai",
-        "version": "0.2.8",
+        "version": "0.2.9",
     }
-    installed = profile / "plugins" / "cache" / "sensai" / "sensai" / "0.2.8"
+    installed = profile / "plugins" / "cache" / "sensai" / "sensai" / "0.2.9"
     assert call("plugin", "add", "sensai@sensai") == {
-        "version": "0.2.8",
+        "version": "0.2.9",
         "installedPath": str(installed),
     }
     assert call("plugin", "list") == [
-        {"name": "sensai", "version": "0.2.8", "installedPath": str(installed)}
+        {"name": "sensai", "version": "0.2.9", "installedPath": str(installed)}
     ]
     assert "consultation_start" not in (installed / "skills" / "sensai" / "SKILL.md").read_text(
         encoding="utf-8"
@@ -392,7 +392,7 @@ def test_public_acceptance_context_keeps_profile_alive_and_cleans_after_body_fai
     ):
         assert isinstance(installed, InstalledCodexPlugin)
         assert installed.selector == "sensai@sensai-local"
-        assert installed.version == "0.2.8"
+        assert installed.version == "0.2.9"
         assert installed.mcp_url == MCP_URL
         assert installed.profile.exists()
         assert (installed.profile / "codex-home").is_dir()
@@ -415,7 +415,7 @@ def test_public_acceptance_blocks_a_browser_launch_without_retaining_its_url(
         '  printf \'{"marketplaceName": "sensai-local"}\\n\'\n'
         'elif [ "$1 $2" = "plugin add" ]; then\n'
         f"  xdg-open {secret_url!r}\n"
-        '  printf \'{"version": "0.2.8", "installedPath": "/ignored"}\\n\'\n'
+        '  printf \'{"version": "0.2.9", "installedPath": "/ignored"}\\n\'\n'
         "fi\n",
         encoding="utf-8",
     )
@@ -537,7 +537,7 @@ def test_codex_lifecycle_with_installed_official_cli(release_bundle: Path) -> No
 
     assert completed.returncode == 0, completed.stderr
     assert "PASS selector=sensai@sensai-local" in completed.stdout
-    assert "PASS version=0.2.8" in completed.stdout
+    assert "PASS version=0.2.9" in completed.stdout
     assert f"PASS mcp={MCP_URL}" in completed.stdout
     assert (
         "PASS isolated-profile=removed real-plugin-lifecycle-boundary=unchanged" in completed.stdout

@@ -12,19 +12,20 @@ Sensai may return advice, architecture, detailed implementation instructions, an
 4. Start a new chat with this instruction:
 
 ```text
-Install Sensai https://github.com/grayvectorblack/sensai-plugin
+Install Sensai https://raw.githubusercontent.com/grayvectorblack/sensai-plugin/main/README.md
 ```
 
 ## Installation (AI agent part)
 
-Here and below, speak to the person in their language and make every step convenient for them. English may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening in plain language and adapt your terminology to their level. Treat the person's time as especially valuable: don't ask them to perform manually actions you can do yourself, though you can inform the person if it makes sense. Avoid technical terms and unnecessary interface clicks. Leave the person only actions that need their own account choice or approval. Nothing in this process should require them to know what `PATH` is.
+Here and below, make every step convenient for the person. English may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening in plain language and adapt your terminology to their level. Treat the person's time as especially valuable: don't ask them to perform manually actions you can do yourself, though you can inform the person if it makes sense. Avoid technical terms and unnecessary interface clicks. Leave the person only actions that need their own account choice or approval. Nothing in this process should require them to know what `PATH` is.
 
 ### General steps
 
-1. Install the plugin yourself.
-2. Before Google sign-in, briefly explain that it lets Sensai understand who it is speaking with and continue the conversation with relevant context, so the consultation carries over into new chats. Say that an ordinary Google window will open, where they choose an account and confirm access.
-3. After that explanation, run the host-specific login command below once. The command opens the sign-in page in the person's default browser itself; you don't open, copy, or hand over the URL. Wait for the command to report actual completion; don't start a second login while one is running. The person only chooses their Google account and approves access. Everything else is yours: the commands, the URL, any code, token, or credential, and confirming that sign-in finished.
-4. After authorization, start Sensai using the host-specific steps below.
+1. Write every message to the person in the language they wrote to you. They wrote in Russian, you answer in Russian.
+2. Install the plugin yourself.
+3. Before Google sign-in, briefly explain that it lets Sensai understand who it is speaking with and continue the conversation with relevant context, so the consultation carries over into new chats. Say that an ordinary Google window will open, where they choose an account and confirm access.
+4. After that explanation, run the host-specific login command below once. The command opens the sign-in page in the person's default browser itself; you don't open, copy, or hand over the URL. Wait for the command to report actual completion; don't start a second login while one is running. The person only chooses their Google account and approves access. Everything else is yours: the commands, the URL, any code, token, or credential, and confirming that sign-in finished.
+5. After authorization, start Sensai using the host-specific steps below.
 
 ### ChatGPT Desktop
 
@@ -47,8 +48,17 @@ For another language, translate both the visible sentence and `Run` inside the l
 ```bash
 claude plugin marketplace add grayvectorblack/sensai-plugin
 claude plugin install sensai@sensai --scope user
-claude mcp login plugin:sensai:sensai
 ```
+
+Sign-in needs a terminal on its input, and your Bash tool has none: run bare, `claude mcp login` stops with `stdin isn't a terminal`. Wrap it for the person's operating system instead:
+
+```bash
+script -q /dev/null claude mcp login plugin:sensai:sensai         # macOS
+script -q -c "claude mcp login plugin:sensai:sensai" /dev/null    # Linux
+start "" /min cmd /c claude mcp login plugin:sensai:sensai        # Windows
+```
+
+The argument order differs between macOS and Linux because they ship different `script` implementations. On macOS and Linux no window appears at all; on Windows a minimized console opens and closes itself. Either way the person only chooses their Google account in the browser, and the command finishes on its own.
 
 Confirm the result with `claude mcp get plugin:sensai:sensai`. Before sign-in it reports `Status: ! Needs authentication`; after a successful sign-in that line changes. Treat the changed status as the signal to continue, not the login command's own exit.
 
@@ -106,3 +116,7 @@ Recover from these yourself and explain the reason to the person in their langua
    both succeed while `claude auth status` reports `"loggedIn": false`, so `claude auth login` is not
    part of this flow. When `claude mcp get plugin:sensai:sensai` reports `Needs authentication`, it is
    Sensai asking, not the CLI.
+
+6. If sign-in fails with `Client ID '<id>' not found`, run `claude mcp logout plugin:sensai:sensai`
+   and repeat the sign-in command; it then succeeds. Handle this silently and continue: the person
+   needs a second trip through the Google window, nothing more.
