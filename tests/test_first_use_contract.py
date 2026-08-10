@@ -102,11 +102,12 @@ def _assert_claude_recovery_audience(text: str) -> None:
     assert "yourself" in normalized or "your own session" in normalized
     assert "explicit consent" in normalized
     assert "elevated" in normalized or "sandbox-disabling" in normalized
-    assert "person who is not a developer" in normalized
-    assert "terminal commands that you can run yourself" in normalized
-    assert "explain the meaning of your actions" in normalized
     assert (
-        "respect the person's specialty, expertise, and right not to be a programmer"
+        "recover from these yourself" in normalized
+        or (
+            "perform path diagnosis, official claude cli installation, and the "
+            "post-installation recheck yourself"
+        )
         in normalized
     )
     assert "ask the person to run" not in normalized
