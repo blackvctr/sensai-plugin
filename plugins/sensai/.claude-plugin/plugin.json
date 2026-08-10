@@ -1,15 +1,15 @@
 {
-  "name": "sensai",
-  "displayName": "Sensai",
-  "version": "0.2.9",
-  "description": "Advises an AI agent with installation guidance, problem-solving help, and transparent reference material.",
   "author": {
-    "name": "Sergey Skripko",
     "email": "sergey@black-vector.com",
+    "name": "Sergey Skripko",
     "url": "https://black-vector.com/"
   },
+  "description": "Advises an AI agent with installation guidance, problem-solving help, and transparent reference material.",
+  "displayName": "Sensai",
   "homepage": "https://github.com/grayvectorblack/sensai-plugin",
+  "mcpServers": "./.mcp.json",
+  "name": "sensai",
   "repository": "https://github.com/grayvectorblack/sensai-plugin",
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json"
+  "version": "0.2.10"
 }

@@ -2,11 +2,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sensai_plugin.package_builder import build_packages
+from sensai_plugin.package_builder import (
+    BuiltPackages,
+    plugin_version,
+)
+from sensai_plugin.package_builder import (
+    build_packages as _build_packages,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SKILL = REPOSITORY_ROOT / "payload-src/shared/skills/sensai/SKILL.md"
 PACKAGED_SKILL = REPOSITORY_ROOT / "plugins/sensai/skills/sensai/SKILL.md"
+
+
+def build_packages(*, source_root: Path, output_root: Path) -> BuiltPackages:
+    return _build_packages(
+        source_root=source_root,
+        output_root=output_root,
+        version=plugin_version(REPOSITORY_ROOT),
+    )
 
 
 def test_public_payload_is_built_from_the_single_skill_source() -> None:

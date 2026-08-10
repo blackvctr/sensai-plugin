@@ -11,11 +11,14 @@ from urllib.parse import urlsplit
 import pytest
 
 from sensai_plugin.package_builder import (
+    BuiltPackages,
     MissingRequiredSourceFileError,
     SourceTreeError,
     UnexpectedSourceFileError,
     UnsafeSourceError,
-    build_packages,
+)
+from sensai_plugin.package_builder import (
+    build_packages as _build_packages,
 )
 
 SourceMutation = Callable[[Path, Path], None]
@@ -34,6 +37,10 @@ EXPECTED_PAYLOAD_FILES = {
         "skills/sensai/SKILL.md",
     },
 }
+
+
+def build_packages(*, source_root: Path, output_root: Path) -> BuiltPackages:
+    return _build_packages(source_root=source_root, output_root=output_root, version="1.2.3")
 
 
 def _regular_files(root: Path) -> dict[str, bytes]:
@@ -342,12 +349,27 @@ def test_plugin_package_001_r03_platform_contracts_derive_shared_runtime_materia
     for payload_root in (built.codex, built.claude):
         assert (payload_root / "skills" / "sensai" / "SKILL.md").read_bytes() == expected_skill
         assert (payload_root / ".mcp.json").read_bytes() == expected_mcp
-    assert (built.codex / ".codex-plugin" / "plugin.json").read_bytes() == (
-        source_copy / "codex" / ".codex-plugin" / "plugin.json"
-    ).read_bytes()
-    assert (built.claude / ".claude-plugin" / "plugin.json").read_bytes() == (
-        source_copy / "claude" / ".claude-plugin" / "plugin.json"
-    ).read_bytes()
+    for platform in ("codex", "claude"):
+        source_manifest = _load_json(
+            source_copy / platform / f".{platform}-plugin" / "plugin.json"
+        )
+        built_manifest = _load_json(
+            getattr(built, platform) / f".{platform}-plugin" / "plugin.json"
+        )
+        assert "version" not in source_manifest
+        assert built_manifest == {**source_manifest, "version": "1.2.3"}
+
+
+def test_plugin_version_cannot_be_reintroduced_into_a_payload_template(
+    source_copy: Path, tmp_path: Path
+) -> None:
+    manifest_path = source_copy / "codex" / ".codex-plugin" / "plugin.json"
+    manifest = _load_json(manifest_path)
+    manifest["version"] = "9.9.9"
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(UnsafeSourceError, match=r"belongs in pyproject\.toml"):
+        build_packages(source_root=source_copy, output_root=tmp_path / "output")
 
 
 @pytest.mark.parametrize(

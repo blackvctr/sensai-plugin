@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import shutil
 import stat
 import tempfile
@@ -13,11 +12,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from sensai_plugin.package_builder import BuiltPackages, UnsafeSourceError, build_packages
+from sensai_plugin.package_builder import (
+    BuiltPackages,
+    UnsafeSourceError,
+    build_packages,
+    plugin_version,
+)
 
 MCP_CONTRACT_VERSION = "1"
 _ATTESTATION_NAME = "sensai-mcp-attestation.json"
-_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?\Z")
 _ARCHIVE_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _MARKETPLACE_NAME = "sensai-local"
 
@@ -63,19 +66,6 @@ def _load_object(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise UnsafeSourceError(f"Expected a JSON object: {path.name}")
     return value
-
-
-def _plugin_version(source_root: Path) -> str:
-    versions = {
-        _load_object(source_root / "codex" / ".codex-plugin" / "plugin.json").get("version"),
-        _load_object(source_root / "claude" / ".claude-plugin" / "plugin.json").get("version"),
-    }
-    if len(versions) != 1:
-        raise UnsafeSourceError("Codex and Claude plugin versions must match")
-    version = versions.pop()
-    if not isinstance(version, str) or _VERSION.fullmatch(version) is None:
-        raise UnsafeSourceError("Plugin version must be a non-empty semantic version")
-    return version
 
 
 def _validate_mcp_url(mcp_url: str) -> None:
@@ -212,7 +202,7 @@ def build_release(
         raise UnsafeSourceError("Release output and payload source roots must not overlap")
     if output.exists() or output.is_symlink():
         raise UnsafeSourceError("Release output already exists")
-    version = _plugin_version(source_root)
+    version = plugin_version(repository_root)
     contract = _canonical_contract_surface(
         _load_object(repository_root / "contracts" / "mcp-surface-v1.json")
     )
@@ -226,6 +216,7 @@ def build_release(
             packages = build_packages(
                 source_root=prepared_source,
                 output_root=workspace / "packages",
+                version=version,
             )
             attestation = _attestation_bytes(schema_hash=schema_hash, mcp_url=mcp_url)
             for payload_root in (packages.codex, packages.claude):

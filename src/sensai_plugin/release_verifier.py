@@ -414,6 +414,7 @@ def _expected_marketplace_bytes(
     source: dict[str, bytes],
     *,
     platform: str,
+    version: str,
     mcp_url: str,
     schema_hash: str,
 ) -> dict[str, bytes]:
@@ -426,8 +427,10 @@ def _expected_marketplace_bytes(
         raise ReleaseVerificationError("Trusted Sensai MCP source is invalid")
     sensai["url"] = mcp_url
     plugin_manifest_relative = f"{platform}/.{platform}-plugin/plugin.json"
+    plugin_manifest = _json_bytes_object(source[plugin_manifest_relative], plugin_manifest_relative)
+    plugin_manifest["version"] = version
     payload: dict[str, bytes] = {
-        f".{platform}-plugin/plugin.json": source[plugin_manifest_relative],
+        f".{platform}-plugin/plugin.json": _document_json(plugin_manifest),
         ".mcp.json": _document_json(mcp),
         _ATTESTATION_NAME: _attestation_bytes(schema_hash=schema_hash, mcp_url=mcp_url),
         "skills/sensai/SKILL.md": source["shared/skills/sensai/SKILL.md"],
@@ -598,6 +601,7 @@ def verify_release(
             trusted = _expected_marketplace_bytes(
                 trusted_source,
                 platform=platform,
+                version=version,
                 mcp_url=expected_mcp_url,
                 schema_hash=trusted_schema_hash,
             )

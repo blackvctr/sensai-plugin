@@ -5,10 +5,24 @@ import json
 import tomllib
 from pathlib import Path
 
-from sensai_plugin.package_builder import build_packages
+from sensai_plugin.package_builder import (
+    BuiltPackages,
+    plugin_version,
+)
+from sensai_plugin.package_builder import (
+    build_packages as _build_packages,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_SOURCE_URL = "https://github.com/grayvectorblack/sensai-plugin"
+
+
+def build_packages(*, source_root: Path, output_root: Path) -> BuiltPackages:
+    return _build_packages(
+        source_root=source_root,
+        output_root=output_root,
+        version=plugin_version(REPOSITORY_ROOT),
+    )
 
 
 def _regular_files(root: Path) -> dict[str, bytes]:
@@ -51,7 +65,7 @@ def test_public_repository_is_a_ready_codex_marketplace(tmp_path: Path) -> None:
                 "name": "sensai",
                 "source": "./plugins/sensai",
                 "description": "Practical guidance for an AI agent.",
-                "version": "0.2.9",
+                "version": "0.2.10",
                 "category": "productivity",
             }
         ],
@@ -93,28 +107,36 @@ def test_committed_plugin_manifest_is_computed_from_packaged_files() -> None:
     assert manifest == expected
 
 
-def test_plugin_version_is_consistent_across_build_and_public_marketplaces() -> None:
+def test_plugin_version_is_consistent_across_build_and_public_marketplaces(tmp_path: Path) -> None:
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     build_version = project["project"]["version"]
     assert isinstance(build_version, str)
 
-    codex = json.loads(
-        (REPOSITORY_ROOT / "payload-src/codex/.codex-plugin/plugin.json").read_text(
-            encoding="utf-8"
+    assert plugin_version(REPOSITORY_ROOT) == build_version
+    for platform in ("codex", "claude"):
+        source_manifest = json.loads(
+            (REPOSITORY_ROOT / f"payload-src/{platform}/.{platform}-plugin/plugin.json").read_text(
+                encoding="utf-8"
+            )
         )
-    )
-    claude = json.loads(
-        (REPOSITORY_ROOT / "payload-src/claude/.claude-plugin/plugin.json").read_text(
-            encoding="utf-8"
-        )
-    )
+        assert "version" not in source_manifest
     marketplace = json.loads(
         (REPOSITORY_ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8")
     )
 
-    assert codex["version"] == build_version
-    assert claude["version"] == build_version
     assert marketplace["plugins"][0]["version"] == build_version
+
+    built = build_packages(
+        source_root=REPOSITORY_ROOT / "payload-src",
+        output_root=tmp_path / "packages",
+    )
+    for platform in ("codex", "claude"):
+        manifest = json.loads(
+            (getattr(built, platform) / f".{platform}-plugin/plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert manifest["version"] == build_version
 
 
 def test_both_platform_manifests_expose_the_public_source_repository(tmp_path: Path) -> None:

@@ -1,24 +1,28 @@
 {
-  "name": "sensai",
-  "version": "0.2.9",
-  "description": "Advises an AI agent with installation guidance, problem-solving help, and transparent reference material.",
   "author": {
-    "name": "Sergey Skripko",
     "email": "sergey@black-vector.com",
+    "name": "Sergey Skripko",
     "url": "https://black-vector.com/"
   },
+  "description": "Advises an AI agent with installation guidance, problem-solving help, and transparent reference material.",
   "homepage": "https://github.com/grayvectorblack/sensai-plugin",
+  "interface": {
+    "capabilities": [
+      "Interactive"
+    ],
+    "category": "Productivity",
+    "defaultPrompt": [
+      "Ask Sensai which workflow would help me most."
+    ],
+    "developerName": "Sergey Skripko",
+    "displayName": "Sensai",
+    "longDescription": "Sensai advises your AI agent with installation instructions, problem-solving guidance, and transparent reference material.",
+    "shortDescription": "Practical advice for your AI agent",
+    "websiteURL": "https://github.com/grayvectorblack/sensai-plugin"
+  },
+  "mcpServers": "./.mcp.json",
+  "name": "sensai",
   "repository": "https://github.com/grayvectorblack/sensai-plugin",
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
-  "interface": {
-    "displayName": "Sensai",
-    "shortDescription": "Practical advice for your AI agent",
-    "longDescription": "Sensai advises your AI agent with installation instructions, problem-solving guidance, and transparent reference material.",
-    "developerName": "Sergey Skripko",
-    "category": "Productivity",
-    "capabilities": ["Interactive"],
-    "websiteURL": "https://github.com/grayvectorblack/sensai-plugin",
-    "defaultPrompt": ["Ask Sensai which workflow would help me most."]
-  }
+  "version": "0.2.10"
 }

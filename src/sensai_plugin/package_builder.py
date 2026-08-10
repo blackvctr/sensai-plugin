@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -94,10 +95,30 @@ _PRIVATE_SERVER_REFERENCE = re.compile(
     r"(?i)(?:\bfrom\s+sensai\.server\b|\bimport\s+sensai\.server\b|"
     r"(?:^|[\s`'\"])(?:server/src/sensai|src/sensai)/[^\s`'\"]+)"
 )
+_SEMVER = re.compile(r"[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?\Z")
 
 
 def _relative_posix(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
+
+
+def plugin_version(repository_root: Path) -> str:
+    """Read the single public package version from pyproject.toml."""
+
+    project_path = repository_root / "pyproject.toml"
+    try:
+        project = tomllib.loads(project_path.read_text(encoding="utf-8"))
+        version = project["project"]["version"]
+    except (FileNotFoundError, KeyError, TypeError, tomllib.TOMLDecodeError) as error:
+        raise UnsafeSourceError("pyproject.toml must declare the plugin version") from error
+    if not isinstance(version, str) or _SEMVER.fullmatch(version) is None:
+        raise UnsafeSourceError("Plugin version must be a semantic version")
+    return version
+
+
+def _validate_version(version: str) -> None:
+    if _SEMVER.fullmatch(version) is None:
+        raise UnsafeSourceError("Plugin version must be a semantic version")
 
 
 def _validate_source_tree(source_root: Path) -> dict[str, bytes]:
@@ -197,6 +218,8 @@ def _validate_structured_contracts(source_bytes: dict[str, bytes]) -> None:
     for platform in ("codex", "claude"):
         relative = f"{platform}/.{platform}-plugin/plugin.json"
         manifest = _load_json_object(relative, source_bytes[relative])
+        if "version" in manifest:
+            raise UnsafeSourceError(f"Plugin version belongs in pyproject.toml, not {relative}")
         _validate_relative_reference(relative, "skills", manifest.get("skills"))
         _validate_relative_reference(relative, "mcpServers", manifest.get("mcpServers"))
         if manifest["skills"].rstrip("/") not in ("skills", "./skills"):
@@ -209,7 +232,17 @@ def _validate_structured_contracts(source_bytes: dict[str, bytes]) -> None:
             )
 
 
-def _write_payload(staging_root: Path, source_bytes: dict[str, bytes], platform: str) -> Path:
+def _render_manifest(content: bytes, version: str) -> bytes:
+    manifest = _load_json_object("plugin.json", content)
+    manifest["version"] = version
+    return (
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+
+
+def _write_payload(
+    staging_root: Path, source_bytes: dict[str, bytes], platform: str, version: str
+) -> Path:
     payload_root = staging_root / platform / "sensai"
     for source_relative, destinations in _SOURCE_TO_PAYLOADS.items():
         for destination_platform, payload_relative in destinations:
@@ -217,18 +250,21 @@ def _write_payload(staging_root: Path, source_bytes: dict[str, bytes], platform:
                 continue
             destination = payload_root / payload_relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(source_bytes[source_relative])
+            content = source_bytes[source_relative]
+            if payload_relative.endswith("plugin.json"):
+                content = _render_manifest(content, version)
+            destination.write_bytes(content)
 
     manifest_lines = []
     for relative in sorted(_EXPECTED_PAYLOAD_FILES[platform]):
         content = (payload_root / relative).read_bytes()
         manifest_lines.append(f"{hashlib.sha256(content).hexdigest()}  {relative}\n")
     (payload_root / "MANIFEST.sha256").write_text("".join(manifest_lines), encoding="utf-8")
-    _validate_built_payload(payload_root, platform)
+    _validate_built_payload(payload_root, platform, version)
     return payload_root
 
 
-def _validate_built_payload(payload_root: Path, platform: str) -> None:
+def _validate_built_payload(payload_root: Path, platform: str, version: str) -> None:
     expected = _EXPECTED_PAYLOAD_FILES[platform] | {"MANIFEST.sha256"}
     found: set[str] = set()
     for path in payload_root.rglob("*"):
@@ -244,6 +280,10 @@ def _validate_built_payload(payload_root: Path, platform: str) -> None:
     root = payload_root.resolve(strict=True)
     manifest_relative = f".{platform}-plugin/plugin.json"
     manifest = _load_json_object(manifest_relative, (payload_root / manifest_relative).read_bytes())
+    if manifest.get("version") != version:
+        raise UnsafeSourceError(
+            "Generated plugin manifest version does not match the build version"
+        )
     for field in ("skills", "mcpServers"):
         raw = manifest[field]
         assert isinstance(raw, str)
@@ -300,8 +340,9 @@ def _publish(staging_root: Path, output_root: Path) -> None:
         raise cleanup_error
 
 
-def build_packages(*, source_root: Path, output_root: Path) -> BuiltPackages:
+def build_packages(*, source_root: Path, output_root: Path, version: str) -> BuiltPackages:
     """Build deterministic Codex and Claude payloads from allowlisted source files."""
+    _validate_version(version)
     source_bytes = _validate_source_tree(source_root)
     resolved_source = source_root.resolve(strict=True)
     resolved_output = output_root.resolve(strict=False)
@@ -313,8 +354,8 @@ def build_packages(*, source_root: Path, output_root: Path) -> BuiltPackages:
     output_parent.mkdir(parents=True, exist_ok=True)
     staging_root = Path(tempfile.mkdtemp(prefix=f".{output_root.name}-build-", dir=output_parent))
     try:
-        _write_payload(staging_root, source_bytes, "codex")
-        _write_payload(staging_root, source_bytes, "claude")
+        _write_payload(staging_root, source_bytes, "codex", version)
+        _write_payload(staging_root, source_bytes, "claude", version)
         _publish(staging_root, output_root)
     except BaseException:
         if staging_root.exists():

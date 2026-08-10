@@ -14,7 +14,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
-from sensai_plugin.package_builder import build_packages  # noqa: E402
+from sensai_plugin.package_builder import build_packages, plugin_version  # noqa: E402
 
 CODEX_MARKETPLACE_PATH = REPOSITORY_ROOT / ".agents" / "plugins" / "marketplace.json"
 CLAUDE_MARKETPLACE_PATH = REPOSITORY_ROOT / ".claude-plugin" / "marketplace.json"
@@ -111,17 +111,19 @@ def _write_files(root: Path, files: dict[str, bytes]) -> None:
 
 def synchronize(*, check: bool) -> bool:
     with tempfile.TemporaryDirectory(prefix="sensai-public-marketplace-") as temporary:
+        version = plugin_version(REPOSITORY_ROOT)
         built = build_packages(
             source_root=REPOSITORY_ROOT / "payload-src",
             output_root=Path(temporary) / "packages",
+            version=version,
         )
         expected_plugin = _combined_plugin_files(built.codex, built.claude)
         expected_codex = _codex_marketplace_bytes()
         claude_manifest = json.loads(
             (built.claude / ".claude-plugin/plugin.json").read_text(encoding="utf-8")
         )
-        version = claude_manifest.get("version")
-        if not isinstance(version, str) or not version:
+        built_version = claude_manifest.get("version")
+        if built_version != version:
             raise RuntimeError("Claude plugin manifest has no version")
         expected_claude = _claude_marketplace_bytes(version)
 
