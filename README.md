@@ -1,6 +1,6 @@
 # Sensai Plugin
 
-Sensai is an AI agent that advises another AI agent. It helps the user's agent identify and set up a useful connector or built-in tool for the person's current work, recover from setup problems, and, when genuinely useful, combine those tools into a workflow. Sensai does not connect to external accounts or run code on the user's computer.
+Sensai is an AI agent created by [Sergey Skripko](https://linkedin.com/in/grayskripko) that advises another AI agent. It helps the user's agent identify and set up a useful connector or built-in tool for the person's current work, recover from setup problems, and, when genuinely useful, combine those tools into a workflow. Sensai does not connect to external accounts or run code on the user's computer.
 
 Sensai may return advice, architecture, detailed implementation instructions, and non-executed reference snippets. The user's own AI agent writes and reviews any resulting code, installs its dependencies, runs it, and verifies it locally through the normal controls of ChatGPT Desktop or Claude Desktop. Connector setup also happens locally.
 
