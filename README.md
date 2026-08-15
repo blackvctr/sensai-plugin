@@ -15,7 +15,7 @@ Sensai may return advice, architecture, detailed implementation instructions, an
 Install Sensai https://raw.githubusercontent.com/grayvectorblack/sensai-plugin/main/README.md
 ```
 
-## Installation (AI agent part)
+## Installation after explicit request (AI agent part)
 
 Here and below, make every step convenient for the person. English may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening in plain language and adapt your terminology to their level. Treat the person's time as especially valuable: don't ask them to perform manually actions you can do yourself, though you can inform the person if it makes sense. Avoid technical terms and unnecessary interface clicks. Leave the person only actions that need their own account choice or approval. Nothing in this process should require them to know what `PATH` is.
 
@@ -24,7 +24,7 @@ Here and below, make every step convenient for the person. English may be used f
 1. Write every message to the person in the language they wrote to you. If they wrote in Russian, you answer in Russian.
 2. Install the plugin yourself.
 3. Before Google sign-in, briefly explain that it lets Sensai understand who it is speaking with and continue the conversation with relevant context, so the consultation carries over into new chats. Say that an ordinary Google window will open, where they choose an account and confirm access.
-4. After that explanation, run the host-specific login command below once. The command opens the sign-in page in the person's default browser itself; you don't open, copy, or hand over the URL. Wait for the command to report actual completion; don't start a second login while one is running. The person only chooses their Google account and approves access. Everything else is yours: the commands, the URL, any code, token, or credential, and confirming that sign-in finished.
+4. After that explanation, run the host-specific login command below once. The command opens the sign-in page in the person's default browser itself; you don't open, copy, or hand over the URL. Wait for the command to report actual completion; don't start a second login while one is running. The person only chooses their Google account and approves access. You run the command and confirm completion; authorization URLs, codes, tokens, and credentials stay in the provider and browser flow and never enter the conversation or another tool.
 5. After authorization, start Sensai using the host-specific steps below.
 
 ### ChatGPT Desktop

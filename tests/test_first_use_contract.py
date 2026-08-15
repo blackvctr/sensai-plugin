@@ -158,6 +158,14 @@ def test_readme_conditions_russian_replies_on_the_person_using_russian() -> None
     assert ". They wrote in Russian, you answer in Russian." not in normalized
 
 
+def test_readme_requires_explicit_install_request_and_keeps_credentials_out_of_chat() -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "Installation after explicit request (AI agent part)" in readme
+    assert "tokens, and credentials stay in the provider and browser flow" in readme
+    assert "never enter the conversation or another tool" in readme
+
+
 def test_readme_labels_windows_commands_by_shell_and_covers_powershell() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
     claude_path = _read_section(readme, "### Claude Desktop", "#### Known problems")
