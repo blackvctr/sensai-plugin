@@ -149,6 +149,29 @@ def test_readme_has_one_general_auth_explanation_and_native_login_per_host() -> 
     assert "claude mcp login plugin:sensai:sensai" in claude_path
 
 
+def test_readme_conditions_russian_replies_on_the_person_using_russian() -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    general_steps = _read_section(readme, "### General steps", "### ChatGPT Desktop")
+    normalized = " ".join(general_steps.split())
+
+    assert "If they wrote in Russian, you answer in Russian." in normalized
+    assert ". They wrote in Russian, you answer in Russian." not in normalized
+
+
+def test_readme_labels_windows_commands_by_shell_and_covers_powershell() -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    claude_path = _read_section(readme, "### Claude Desktop", "#### Known problems")
+
+    assert "# Windows\n" not in claude_path
+    assert "# Windows, CMD" in claude_path
+    assert "# Windows, PowerShell" in claude_path
+    assert (
+        "Start-Process cmd -ArgumentList '/c','claude mcp login plugin:sensai:sensai' "
+        "-WorkingDirectory 'C:\\' -WindowStyle Minimized" in claude_path
+    )
+    assert "Start-Process 'claude://code/new?q=%2Fsensai%3Asensai'" in claude_path
+
+
 def test_built_codex_and_claude_payloads_share_the_auth_explanation(tmp_path: Path) -> None:
     built = build_packages(
         source_root=REPOSITORY_ROOT / "payload-src",

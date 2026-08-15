@@ -21,7 +21,7 @@ Here and below, make every step convenient for the person. English may be used f
 
 ### General steps
 
-1. Write every message to the person in the language they wrote to you. They wrote in Russian, you answer in Russian.
+1. Write every message to the person in the language they wrote to you. If they wrote in Russian, you answer in Russian.
 2. Install the plugin yourself.
 3. Before Google sign-in, briefly explain that it lets Sensai understand who it is speaking with and continue the conversation with relevant context, so the consultation carries over into new chats. Say that an ordinary Google window will open, where they choose an account and confirm access.
 4. After that explanation, run the host-specific login command below once. The command opens the sign-in page in the person's default browser itself; you don't open, copy, or hand over the URL. Wait for the command to report actual completion; don't start a second login while one is running. The person only chooses their Google account and approves access. Everything else is yours: the commands, the URL, any code, token, or credential, and confirming that sign-in finished.
@@ -50,24 +50,26 @@ claude plugin marketplace add grayvectorblack/sensai-plugin
 claude plugin install sensai@sensai --scope user
 ```
 
-Sign-in needs a terminal on its input, and your Bash tool has none: run bare, `claude mcp login` stops with `stdin isn't a terminal`. Wrap it for the person's operating system instead:
+Sign-in needs a terminal on its input, and your Bash tool has none: run bare, `claude mcp login` stops with `stdin isn't a terminal`. Wrap it for the shell you are running in instead:
 
 ```bash
-script -q /dev/null claude mcp login plugin:sensai:sensai         # macOS
-script -q -c "claude mcp login plugin:sensai:sensai" /dev/null    # Linux
-start "" /min cmd /c claude mcp login plugin:sensai:sensai        # Windows
+script -q /dev/null claude mcp login plugin:sensai:sensai                     # macOS
+script -q -c "claude mcp login plugin:sensai:sensai" /dev/null                # Linux
+start "" /min cmd /c claude mcp login plugin:sensai:sensai                    # Windows, CMD
+Start-Process cmd -ArgumentList '/c','claude mcp login plugin:sensai:sensai' -WorkingDirectory 'C:\' -WindowStyle Minimized    # Windows, PowerShell
 ```
 
-The argument order differs between macOS and Linux because they ship different `script` implementations. On macOS and Linux no window appears at all; on Windows a minimized console opens and closes itself. Either way the person only chooses their Google account in the browser, and the command finishes on its own.
+The argument order differs between macOS and Linux because they ship different `script` implementations. Windows needs two lines because it ships two shells: in PowerShell `start` is an alias for `Start-Process`, which reads the empty `""` title as the program to run, so the CMD line fails there. Pick by shell, not by operating system. `-WorkingDirectory 'C:\'` matters when your shell sits on a path Windows cannot use as a working directory, such as a WSL mount; without it the launch dies with `Windows cannot find '\\'` and writes nothing to any log. On macOS and Linux no window appears at all; on Windows a minimized console opens and closes itself. Either way the person only chooses their Google account in the browser, and the command finishes on its own.
 
 Confirm the result with `claude mcp get plugin:sensai:sensai`. Before sign-in it reports `Status: ! Needs authentication`; after a successful sign-in that line changes. Treat the changed status as the signal to continue, not the login command's own exit.
 
-Then open the new session yourself, using the command for the person's operating system:
+Then open the new session yourself, again using the line for the shell you are running in:
 
 ```bash
-start "" "claude://code/new?q=%2Fsensai%3Asensai"    # Windows
-open "claude://code/new?q=%2Fsensai%3Asensai"        # macOS
-xdg-open "claude://code/new?q=%2Fsensai%3Asensai"    # Linux
+start "" "claude://code/new?q=%2Fsensai%3Asensai"         # Windows, CMD
+Start-Process 'claude://code/new?q=%2Fsensai%3Asensai'    # Windows, PowerShell
+open "claude://code/new?q=%2Fsensai%3Asensai"             # macOS
+xdg-open "claude://code/new?q=%2Fsensai%3Asensai"         # Linux
 ```
 
 A new Claude Code session opens with `/sensai:sensai` already in its composer.
