@@ -6,10 +6,10 @@
   },
   "description": "Advises an AI agent with installation guidance, problem-solving help, and transparent reference material.",
   "displayName": "Sensai",
-  "homepage": "https://github.com/grayvectorblack/sensai-plugin",
+  "homepage": "https://github.com/blackvctr/sensai-plugin",
   "mcpServers": "./.mcp.json",
   "name": "sensai",
-  "repository": "https://github.com/grayvectorblack/sensai-plugin",
+  "repository": "https://github.com/blackvctr/sensai-plugin",
   "skills": "./skills/",
   "version": "0.2.10"
 }

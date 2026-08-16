@@ -13,14 +13,14 @@ The public README is the human-facing starting point. The installing agent uses 
 Codex:
 
 ```bash
-codex plugin marketplace add grayvectorblack/sensai-plugin
+codex plugin marketplace add blackvctr/sensai-plugin
 codex plugin add sensai@sensai
 ```
 
 Claude Code:
 
 ```bash
-claude plugin marketplace add grayvectorblack/sensai-plugin
+claude plugin marketplace add blackvctr/sensai-plugin
 claude plugin install sensai@sensai --scope user
 ```
 

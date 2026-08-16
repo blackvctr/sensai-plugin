@@ -14,7 +14,7 @@ from sensai_plugin.package_builder import (
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-PUBLIC_SOURCE_URL = "https://github.com/grayvectorblack/sensai-plugin"
+PUBLIC_SOURCE_URL = "https://github.com/blackvctr/sensai-plugin"
 
 
 def build_packages(*, source_root: Path, output_root: Path) -> BuiltPackages:

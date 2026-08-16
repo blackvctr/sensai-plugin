@@ -5,7 +5,7 @@
     "url": "https://black-vector.com/"
   },
   "description": "Advises an AI agent with installation guidance, problem-solving help, and transparent reference material.",
-  "homepage": "https://github.com/grayvectorblack/sensai-plugin",
+  "homepage": "https://github.com/blackvctr/sensai-plugin",
   "interface": {
     "capabilities": [
       "Interactive"
@@ -18,11 +18,11 @@
     "displayName": "Sensai",
     "longDescription": "Sensai advises your AI agent with installation instructions, problem-solving guidance, and transparent reference material.",
     "shortDescription": "Practical advice for your AI agent",
-    "websiteURL": "https://github.com/grayvectorblack/sensai-plugin"
+    "websiteURL": "https://github.com/blackvctr/sensai-plugin"
   },
   "mcpServers": "./.mcp.json",
   "name": "sensai",
-  "repository": "https://github.com/grayvectorblack/sensai-plugin",
+  "repository": "https://github.com/blackvctr/sensai-plugin",
   "skills": "./skills/",
   "version": "0.2.10"
 }

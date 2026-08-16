@@ -6,8 +6,8 @@
     "email": "sergey@black-vector.com",
     "url": "https://black-vector.com/"
   },
-  "homepage": "https://github.com/grayvectorblack/sensai-plugin",
-  "repository": "https://github.com/grayvectorblack/sensai-plugin",
+  "homepage": "https://github.com/blackvctr/sensai-plugin",
+  "repository": "https://github.com/blackvctr/sensai-plugin",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -17,7 +17,7 @@
     "developerName": "Sergey Skripko",
     "category": "Productivity",
     "capabilities": ["Interactive"],
-    "websiteURL": "https://github.com/grayvectorblack/sensai-plugin",
+    "websiteURL": "https://github.com/blackvctr/sensai-plugin",
     "defaultPrompt": ["Ask Sensai which workflow would help me most."]
   }
 }

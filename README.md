@@ -12,7 +12,7 @@ Sensai may return advice, architecture, detailed implementation instructions, an
 4. Start a new chat with this instruction:
 
 ```text
-Install Sensai https://raw.githubusercontent.com/grayvectorblack/sensai-plugin/main/README.md
+Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
 ```
 
 ## Installation after explicit request (AI agent part)
@@ -30,7 +30,7 @@ Here and below, make every step convenient for the person. English may be used f
 ### ChatGPT Desktop
 
 ```bash
-codex plugin marketplace add grayvectorblack/sensai-plugin
+codex plugin marketplace add blackvctr/sensai-plugin
 codex plugin add sensai@sensai
 codex mcp login sensai
 ```
@@ -46,7 +46,7 @@ For another language, translate both the visible sentence and `Run` inside the l
 ### Claude Desktop
 
 ```bash
-claude plugin marketplace add grayvectorblack/sensai-plugin
+claude plugin marketplace add blackvctr/sensai-plugin
 claude plugin install sensai@sensai --scope user
 ```
 
