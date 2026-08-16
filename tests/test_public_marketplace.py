@@ -15,6 +15,7 @@ from sensai_plugin.package_builder import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_SOURCE_URL = "https://github.com/blackvctr/sensai-plugin"
+PLUGIN_VERSION = plugin_version(REPOSITORY_ROOT)
 
 
 def build_packages(*, source_root: Path, output_root: Path) -> BuiltPackages:
@@ -65,7 +66,7 @@ def test_public_repository_is_a_ready_codex_marketplace(tmp_path: Path) -> None:
                 "name": "sensai",
                 "source": "./plugins/sensai",
                 "description": "Practical guidance for an AI agent.",
-                "version": "0.2.10",
+                "version": PLUGIN_VERSION,
                 "category": "productivity",
             }
         ],

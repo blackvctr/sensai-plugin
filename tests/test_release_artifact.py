@@ -10,7 +10,10 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from sensai_plugin.package_builder import plugin_version
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_VERSION = plugin_version(REPOSITORY_ROOT)
 MCP_URL = "http://127.0.0.1:8765/mcp"
 ATTESTATION_PATH = "plugins/sensai/sensai-mcp-attestation.json"
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
@@ -130,12 +133,12 @@ def test_pre2e_r01_builds_and_independently_verifies_versioned_release(
     assert _files(first) == _files(second)
     assert set(_files(first)) == {
         "release.json",
-        "sensai-0.2.10-claude-marketplace.zip",
-        "sensai-0.2.10-codex-marketplace.zip",
+        f"sensai-{PLUGIN_VERSION}-claude-marketplace.zip",
+        f"sensai-{PLUGIN_VERSION}-codex-marketplace.zip",
     }
 
     metadata = _json(first / "release.json")
-    assert metadata["release_version"] == "0.2.10"
+    assert metadata["release_version"] == PLUGIN_VERSION
     assert metadata["mcp_url"] == MCP_URL
     assert metadata["mcp_contract_version"] == "1"
     assert len(metadata["mcp_schema_sha256"]) == 64
@@ -168,7 +171,7 @@ def test_pre2e_r01_builds_and_independently_verifies_versioned_release(
         "mcp_schema_sha256": metadata["mcp_schema_sha256"],
         "mcp_url": MCP_URL,
         "platforms": ["claude", "codex"],
-        "release_version": "0.2.10",
+        "release_version": PLUGIN_VERSION,
         "verified": True,
     }
 
