@@ -63,7 +63,7 @@ def _assert_connector_first_positioning(text: str) -> None:
 
 
 def _assert_explicit_connector_guidance_request(text: str) -> None:
-    """A named setup request must reach the server as structured intent."""
+    """Only a human-confirmed named setup request reaches the server as intent."""
 
     normalized = " ".join(text.lower().split())
     assert "guidance_request" in normalized
@@ -73,6 +73,8 @@ def _assert_explicit_connector_guidance_request(text: str) -> None:
     assert "activation" in normalized
     assert "authorization" in normalized
     assert "first verification" in normalized
+    assert "explicitly confirmed" in normalized
+    assert "first mentioning or recommending a connector is not confirmation" in normalized
     assert "discovery" in normalized
 
 
