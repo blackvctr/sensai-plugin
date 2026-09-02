@@ -65,10 +65,13 @@ def text_block(index, text):
         "type": "content_block_delta", "index": index,
         "delta": {"type": "text_delta", "text": text}
     }})
-    emit({
-        "type": "stream_event",
-        "event": {"type": "content_block_stop", "index": index}
-    })
+    if __MODE__ == "tool-before-first-text-complete":
+        tool_block(index + 1)
+    if __MODE__ != "delta-without-complete-block":
+        emit({
+            "type": "stream_event",
+            "event": {"type": "content_block_stop", "index": index}
+        })
 
 def tool_block(index):
     if __MODE__ == "hook-state-unavailable":
@@ -81,19 +84,31 @@ def tool_block(index):
         "content_block": {"type": "tool_use", "name": "Bash", "input": {}}
     }})
 
-if __MODE__ == "tool-first":
+if __MODE__ == "timeout":
+    time.sleep(2)
+elif __MODE__ in {"tool-first", "hook-state-unavailable"}:
     tool_block(0)
     text_block(1, __FIRST_REPLY__)
 elif __MODE__ == "english-then-russian":
     text_block(0, __FIRST_REPLY__)
     text_block(1, __SECOND_REPLY__)
-else:
+elif __MODE__ == "repeated-denied-tools-no-result":
     text_block(0, __FIRST_REPLY__)
-    if __MODE__ in {"tool-after-text", "hook-state-unavailable"}:
-        tool_block(1)
-if __MODE__ == "timeout":
+    tool_block(1)
+    tool_block(2)
     time.sleep(2)
 else:
+    text_block(0, __FIRST_REPLY__)
+    if __MODE__ == "tool-after-text":
+        tool_block(1)
+    if __MODE__ in {"complete-text-then-live-no-result", "delta-without-complete-block"}:
+        time.sleep(2)
+if __MODE__ not in {
+    "timeout",
+    "repeated-denied-tools-no-result",
+    "complete-text-then-live-no-result",
+    "delta-without-complete-block",
+}:
     emit({"type": "result"})
     if __MODE__ == "multiple-lines-then-live":
         time.sleep(2)
@@ -116,7 +131,7 @@ def _run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
-    mode: str = "tool-after-text",
+    mode: str = "complete-first-block",
     first_reply: str = "Я установлю Sensai самостоятельно.",
     second_reply: str = "",
     scenario: FirstReplyScenario = FirstReplyScenario.URL_BOOTSTRAP,
@@ -151,32 +166,44 @@ def _run(
     return result
 
 
-def test_canonical_url_scenario_requires_russian_visible_reply_before_tool(
+def test_canonical_url_scenario_completes_after_its_first_russian_reply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result = _run(tmp_path, monkeypatch)
 
     assert result.passed
-    assert result.event_order == ("assistant_reply", "tool_attempt", "result")
+    assert result.event_order == ("assistant_reply",)
     assert result.first_reply_captured
     assert result.cyrillic_present and result.cyrillic_preponderates
     assert not result.terminal_lexeme_present
     assert not result.code_block_present
-    assert result.tool_requested
-    assert result.tool_gate_reached
+    assert not result.tool_requested
+    assert not result.tool_gate_reached
     assert result.result == "completed"
     assert "Установи" not in result.safe_json()
     assert "profile" not in result.safe_json()
     assert "credential" not in result.safe_json()
 
 
-def test_tool_before_visible_reply_fails_even_if_text_arrives_later(
+def test_tool_before_text_remains_a_failed_first_reply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result = _run(tmp_path, monkeypatch, mode="tool-first")
 
     assert not result.passed
-    assert result.event_order == ("tool_attempt", "assistant_reply", "result")
+    assert result.event_order == ("tool_attempt", "assistant_reply")
+    assert result.tool_requested
+    assert result.tool_gate_reached
+    assert result.result == "stream_evidence_missing"
+
+
+def test_tool_after_text_but_before_the_first_text_block_ends_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _run(tmp_path, monkeypatch, mode="tool-before-first-text-complete")
+
+    assert not result.passed
+    assert result.event_order == ("assistant_reply", "tool_attempt")
     assert result.tool_requested
     assert result.tool_gate_reached
     assert result.result == "stream_evidence_missing"
@@ -225,7 +252,55 @@ def test_multiple_stream_lines_are_consumed_before_a_live_child_is_stopped(
     result = _run(tmp_path, monkeypatch, mode="multiple-lines-then-live", timeout_seconds=0.5)
 
     assert result.passed
-    assert result.event_order == ("assistant_reply", "result")
+    assert result.event_order == ("assistant_reply",)
+    assert not result.timed_out
+
+
+def test_complete_text_stops_a_live_child_without_waiting_for_a_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _run(
+        tmp_path,
+        monkeypatch,
+        mode="complete-text-then-live-no-result",
+        timeout_seconds=1,
+    )
+
+    assert result.passed
+    assert result.event_order == ("assistant_reply",)
+    assert result.result == "completed"
+    assert not result.timed_out
+
+
+def test_text_delta_without_its_completed_block_is_not_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _run(
+        tmp_path,
+        monkeypatch,
+        mode="delta-without-complete-block",
+        timeout_seconds=1,
+    )
+
+    assert not result.passed
+    assert result.first_reply_captured
+    assert result.result == "timed_out"
+    assert result.timed_out
+
+
+def test_first_reply_does_not_wait_for_repeated_denied_tools_or_a_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _run(
+        tmp_path,
+        monkeypatch,
+        mode="repeated-denied-tools-no-result",
+        timeout_seconds=0.8,
+    )
+
+    assert result.passed
+    assert result.event_order == ("assistant_reply",)
+    assert result.result == "completed"
     assert not result.timed_out
 
 

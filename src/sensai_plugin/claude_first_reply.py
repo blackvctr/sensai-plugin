@@ -327,6 +327,10 @@ def _stream_text_delta(event: dict[str, object], index: int) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
+def _stream_text_stop(event: dict[str, object], index: int) -> bool:
+    return event.get("type") == "content_block_stop" and event.get("index") == index
+
+
 def _event_is_result(event: object) -> bool:
     return isinstance(event, dict) and event.get("type") == "result"
 
@@ -377,6 +381,8 @@ def _read_stream(
     bool,
     bool,
     bool,
+    bool,
+    bool,
 ]:
     """Read stream-json without returning text, URLs, IDs, or error output."""
 
@@ -390,15 +396,19 @@ def _read_stream(
     first_reply_captured = False
     flags = _FirstReplyFlags()
     result_seen = False
+    first_text_complete = False
+    tool_before_first_text_complete = False
     malformed = False
     timed_out = False
     ended_after_result = False
+    ended_after_first_text = False
     end_of_stream = False
     pending = bytearray()
     deadline = time.monotonic() + timeout_seconds
 
     def consume(line: bytes) -> bool:
-        nonlocal first_text_index, first_reply_captured, malformed, result_seen
+        nonlocal first_text_index, first_reply_captured, first_text_complete
+        nonlocal malformed, result_seen, tool_before_first_text_complete
         if len(line) > MAX_STREAM_LINE_BYTES:
             malformed = True
             return True
@@ -412,6 +422,7 @@ def _read_stream(
                 index, block_type = started
                 if block_type == "tool_use":
                     order.append("tool_attempt")
+                    tool_before_first_text_complete = not first_text_complete
                 elif block_type == "text" and first_text_index is None:
                     first_text_index = index
             if first_text_index is not None and (
@@ -422,6 +433,9 @@ def _read_stream(
                     order.append("assistant_reply")
                 if first_reply_captured:
                     flags.add(delta)
+            if first_text_index is not None and _stream_text_stop(nested, first_text_index):
+                first_text_complete = True
+                return True
         if _event_is_result(outer):
             result_seen = True
             order.append("result")
@@ -430,6 +444,10 @@ def _read_stream(
 
     try:
         while True:
+            if first_text_complete:
+                ended_after_first_text = True
+                _terminate(process)
+                break
             if result_seen:
                 ended_after_result = True
                 _terminate(process)
@@ -467,9 +485,11 @@ def _read_stream(
                     pending = bytearray(remaining_bytes)
                     if consume(bytes(line)):
                         break
-                if malformed or result_seen:
+                if malformed or result_seen or first_text_complete:
                     break
-            if malformed or end_of_stream:
+            if malformed or first_text_complete or end_of_stream:
+                if first_text_complete:
+                    ended_after_first_text = True
                 _terminate(process)
                 break
     finally:
@@ -484,6 +504,8 @@ def _read_stream(
         malformed,
         timed_out,
         ended_after_result,
+        ended_after_first_text,
+        tool_before_first_text_complete,
     )
 
 
@@ -543,6 +565,8 @@ def run_real_claude_first_reply(
             malformed,
             timed_out,
             ended_after_result,
+            ended_after_first_text,
+            tool_before_first_text_complete,
         ) = _read_stream(process, timeout_seconds=timeout_seconds)
         returncode = process.wait()
         observed = _read_state(state)
@@ -556,17 +580,18 @@ def run_real_claude_first_reply(
             result = "timed_out"
         elif malformed:
             result = "malformed_stream"
-        elif returncode != 0 and not ended_after_result:
+        elif returncode != 0 and not (ended_after_result or ended_after_first_text):
             result = "cli_failed"
-        elif not result_seen:
+        elif not result_seen and (not ended_after_first_text or not first_reply_captured):
             result = "stream_evidence_missing"
         else:
             result = "completed"
     model_tool_requested = "tool_attempt" in order
     if (
         tool_before_text
+        or tool_before_first_text_complete
         or (tool_attempted and (not order or order[0] != "assistant_reply"))
-        or model_tool_requested != tool_attempted
+        or (model_tool_requested != tool_attempted and not ended_after_first_text)
     ) and result == "completed":
         result = "stream_evidence_missing"
     if seen_nonblank_text != first_reply_captured and result == "completed":
