@@ -64,8 +64,9 @@ def _assert_post_install_consultation_contract(text: str) -> None:
     assert "confirmed outcome" in normalized
 
     # Sensai may receive concise English, but the person receives their language.
-    assert "person" in normalized
-    assert "language" in normalized
+    assert "speak to the person" in normalized
+    assert "their language" in normalized
+    assert "send quotes or equivalent direct translations" in normalized
 
     # Sensitive information stays outside the consultation.
     assert "sensitive information" in normalized
@@ -77,6 +78,7 @@ def _assert_post_install_consultation_contract(text: str) -> None:
     assert "guidance_request" not in normalized
     assert "codex mcp login" not in normalized
     assert "claude mcp login" not in normalized
+    assert "official claude cli" not in normalized
 
 
 def _assert_claude_recovery_audience(text: str) -> None:
