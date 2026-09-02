@@ -166,9 +166,12 @@ def test_readme_requires_russian_first_install_reply_before_general_steps() -> N
     pre_general_steps = _read_section(readme, installation_start, "### General steps")
     normalized = " ".join(pre_general_steps.split())
 
-    assert "first reply" in normalized
+    first_reply = normalized.index("first visible reply")
+    tool_call = normalized.index("calling any tool")
+    assert tool_call < first_reply
     assert "if they write `Установи Sensai ...`, reply in Russian" in normalized
-    assert "do not begin with an English command or terminal instruction" in normalized
+    assert "install Sensai yourself" in normalized
+    assert "do not ask them to use a terminal" in normalized
 
 
 def test_readme_requires_explicit_install_request_and_keeps_credentials_out_of_chat() -> None:

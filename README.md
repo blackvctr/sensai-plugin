@@ -17,7 +17,7 @@ Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/RE
 
 ## Installation after explicit request (AI agent part)
 
-Before taking any installation step, make your first reply in the language of the person's request. For example, if they write `Установи Sensai ...`, reply in Russian; do not begin with an English command or terminal instruction.
+Before calling any tool or taking an installation step, make your first visible reply in the language of the person's request. For example, if they write `Установи Sensai ...`, reply in Russian, say that you will install Sensai yourself, and do not ask them to use a terminal or begin with an English command.
 
 Here and below, make every step convenient for the person. English may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening in plain language and adapt your terminology to their level. Treat the person's time as especially valuable: don't ask them to perform manually actions you can do yourself, though you can inform the person if it makes sense. Avoid technical terms and unnecessary interface clicks. Leave the person only actions that need their own account choice or approval. Nothing in this process should require them to know what `PATH` is.
 
