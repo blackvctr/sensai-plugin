@@ -160,6 +160,17 @@ def test_readme_conditions_russian_replies_on_the_person_using_russian() -> None
     assert ". They wrote in Russian, you answer in Russian." not in normalized
 
 
+def test_readme_requires_russian_first_install_reply_before_general_steps() -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    installation_start = "## Installation after explicit request (AI agent part)"
+    pre_general_steps = _read_section(readme, installation_start, "### General steps")
+    normalized = " ".join(pre_general_steps.split())
+
+    assert "first reply" in normalized
+    assert "if they write `Установи Sensai ...`, reply in Russian" in normalized
+    assert "do not begin with an English command or terminal instruction" in normalized
+
+
 def test_readme_requires_explicit_install_request_and_keeps_credentials_out_of_chat() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
 
