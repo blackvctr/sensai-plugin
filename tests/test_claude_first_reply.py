@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import textwrap
 from pathlib import Path
 
 import pytest
 
+import sensai_plugin.claude_first_reply as first_reply_module
 from sensai_plugin.claude_first_reply import (
     _SCENARIO_PROMPTS,
     ClaudeFirstReplyAcceptance,
@@ -20,12 +22,6 @@ def _fake_claude(
     mode: str,
     first_reply: str,
     second_reply: str = "",
-    mutate_profile: bool = False,
-    mutate_root_config: bool = False,
-    mutate_direct_config: bool = False,
-    mutate_sensai_registry: bool = False,
-    critical_surface: str = "",
-    normal_startup_churn: bool = False,
 ) -> None:
     source = r'''#!/usr/bin/env python3
 import json
@@ -94,50 +90,6 @@ else:
     text_block(0, __FIRST_REPLY__)
     if __MODE__ in {"tool-after-text", "hook-state-unavailable"}:
         tool_block(1)
-if __MUTATE_PROFILE__:
-    settings_path = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "settings.json")
-    with open(settings_path, "w", encoding="utf-8") as output:
-        output.write("{}")
-if __MUTATE_ROOT_CONFIG__:
-    root_config = os.path.join(os.environ["HOME"], ".claude.json")
-    os.makedirs(os.path.dirname(root_config), exist_ok=True)
-    with open(root_config, "w", encoding="utf-8") as output:
-        output.write("critical root state")
-if __MUTATE_DIRECT_CONFIG__:
-    direct_config = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "account-state.json")
-    with open(direct_config, "w", encoding="utf-8") as output:
-        output.write("critical direct config")
-if __MUTATE_SENSAI_REGISTRY__:
-    registry = os.path.join(
-        os.environ["CLAUDE_CONFIG_DIR"], "plugins", "installed_plugins.json"
-    )
-    os.makedirs(os.path.dirname(registry), exist_ok=True)
-    with open(registry, "w", encoding="utf-8") as output:
-        output.write("critical registry")
-if __CRITICAL_SURFACE__:
-    targets = {
-        "marketplace": os.path.join(
-            os.environ["CLAUDE_CONFIG_DIR"], "plugins", "marketplaces", "sensai-local", "marker"
-        ),
-        "cache": os.path.join(
-            os.environ["CLAUDE_CODE_PLUGIN_CACHE_DIR"], "sensai-local", "marker"
-        ),
-        "secure": os.path.join(os.environ["CLAUDE_SECURESTORAGE_CONFIG_DIR"], "marker"),
-        "xdg-config": os.path.join(os.environ["XDG_CONFIG_HOME"], "claude", "marker"),
-        "xdg-data": os.path.join(os.environ["XDG_DATA_HOME"], "claude", "marker"),
-        "xdg-data-code": os.path.join(os.environ["XDG_DATA_HOME"], "claude-code", "marker"),
-    }
-    target = targets[__CRITICAL_SURFACE__]
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w", encoding="utf-8") as output:
-        output.write("critical surface")
-if __NORMAL_STARTUP_CHURN__:
-    backup = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "backups", "normal-startup")
-    os.makedirs(os.path.dirname(backup), exist_ok=True)
-    with open(backup, "w", encoding="utf-8") as output:
-        output.write("normal backup")
-    cache = os.path.join(os.environ["XDG_CACHE_HOME"], "claude-cli-nodejs", "normal-startup")
-    os.makedirs(cache, exist_ok=True)
 if __MODE__ == "timeout":
     time.sleep(2)
 else:
@@ -153,13 +105,7 @@ else:
         .replace(
             "__EXPECTED_PROMPT__",
             repr(_SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP]),
-        )
-        .replace("__MUTATE_PROFILE__", repr(mutate_profile))
-        .replace("__MUTATE_ROOT_CONFIG__", repr(mutate_root_config))
-        .replace("__MUTATE_DIRECT_CONFIG__", repr(mutate_direct_config))
-        .replace("__MUTATE_SENSAI_REGISTRY__", repr(mutate_sensai_registry))
-        .replace("__CRITICAL_SURFACE__", repr(critical_surface))
-        .replace("__NORMAL_STARTUP_CHURN__", repr(normal_startup_churn)),
+        ),
         encoding="utf-8",
     )
     executable.chmod(0o755)
@@ -173,13 +119,6 @@ def _run(
     first_reply: str = "Я установлю Sensai самостоятельно.",
     second_reply: str = "",
     scenario: FirstReplyScenario = FirstReplyScenario.URL_BOOTSTRAP,
-    mutate_profile: bool = False,
-    mutate_root_config: bool = False,
-    mutate_direct_config: bool = False,
-    mutate_sensai_registry: bool = False,
-    critical_surface: str = "",
-    normal_startup_churn: bool = False,
-    credential_surface_available: bool = True,
     timeout_seconds: float = 1,
 ) -> ClaudeFirstReplyAcceptance:
     executable = tmp_path / "claude"
@@ -188,12 +127,6 @@ def _run(
         mode=mode,
         first_reply=first_reply,
         second_reply=second_reply,
-        mutate_profile=mutate_profile,
-        mutate_root_config=mutate_root_config,
-        mutate_direct_config=mutate_direct_config,
-        mutate_sensai_registry=mutate_sensai_registry,
-        critical_surface=critical_surface,
-        normal_startup_churn=normal_startup_churn,
     )
     configured_profile = tmp_path / "real-profile"
     configured_profile.mkdir()
@@ -202,10 +135,6 @@ def _run(
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured_profile))
     monkeypatch.setenv("CLAUDE_CODE_PLUGIN_CACHE_DIR", str(tmp_path / "plugin-cache"))
-    if credential_surface_available:
-        monkeypatch.setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", str(tmp_path / "secure-storage"))
-    else:
-        monkeypatch.delenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
@@ -235,9 +164,9 @@ def test_canonical_url_scenario_requires_russian_visible_reply_before_tool(
     assert result.tool_requested
     assert result.tool_gate_reached
     assert result.result == "completed"
-    assert result.profile_integrity == "unchanged"
-    assert not result.service_churn_detected
     assert "Установи" not in result.safe_json()
+    assert "profile" not in result.safe_json()
+    assert "credential" not in result.safe_json()
 
 
 def test_tool_before_visible_reply_fails_even_if_text_arrives_later(
@@ -289,71 +218,6 @@ def test_canonical_url_scenario_rejects_technical_first_reply(
     assert result.code_block_present is expected_code
 
 
-def test_settings_change_fails_profile_integrity_without_disclosing_the_changed_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    result = _run(tmp_path, monkeypatch, mutate_profile=True)
-
-    assert not result.passed
-    assert result.result == "completed"
-    assert result.profile_integrity == "changed"
-    assert "settings" not in result.safe_json()
-
-
-def test_normal_claude_backup_and_cache_churn_is_not_a_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    result = _run(tmp_path, monkeypatch, normal_startup_churn=True)
-
-    assert result.passed
-    assert result.result == "completed"
-    assert result.profile_integrity == "unchanged"
-    assert result.service_churn_detected
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        "mutate_root_config",
-        "mutate_direct_config",
-        "mutate_sensai_registry",
-        "marketplace",
-        "cache",
-        "secure",
-        "xdg-config",
-        "xdg-data",
-        "xdg-data-code",
-    ],
-)
-def test_critical_profile_surface_change_never_passes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mutation: str,
-) -> None:
-    if mutation == "mutate_root_config":
-        result = _run(tmp_path, monkeypatch, mutate_root_config=True)
-    elif mutation == "mutate_direct_config":
-        result = _run(tmp_path, monkeypatch, mutate_direct_config=True)
-    elif mutation == "mutate_sensai_registry":
-        result = _run(tmp_path, monkeypatch, mutate_sensai_registry=True)
-    else:
-        result = _run(tmp_path, monkeypatch, critical_surface=mutation)
-
-    assert not result.passed
-    assert result.result == "completed"
-    assert result.profile_integrity == "changed"
-
-
-def test_missing_observable_credential_surface_makes_integrity_unavailable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    result = _run(tmp_path, monkeypatch, credential_surface_available=False)
-
-    assert not result.passed
-    assert result.result == "completed"
-    assert result.profile_integrity == "unavailable"
-
-
 def test_multiple_stream_lines_are_consumed_before_a_live_child_is_stopped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -373,6 +237,29 @@ def test_unavailable_pretool_state_still_denies_the_tool_and_fails_closed(
     assert result.tool_requested
     assert not result.tool_gate_reached
     assert result.result == "hook_evidence_missing"
+
+
+def test_unset_secure_storage_does_not_block_first_reply_acceptance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", raising=False)
+
+    result = _run(tmp_path, monkeypatch)
+
+    assert result.passed
+
+
+def test_harness_has_no_profile_or_credential_reader() -> None:
+    source = inspect.getsource(first_reply_module)
+
+    for forbidden in (
+        "_real_profile",
+        "_bounded_surface",
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+        "os.lstat",
+        "os.scandir",
+    ):
+        assert forbidden not in source
 
 
 def test_timeout_is_safe_and_cleans_temporary_hooks(

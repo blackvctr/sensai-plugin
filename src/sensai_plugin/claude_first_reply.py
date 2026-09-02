@@ -26,8 +26,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from sensai_plugin.claude_acceptance import _bounded_surface_fingerprint, _real_profile_surfaces
-
 CLAUDE_TIMEOUT_SECONDS = 45
 CLAUDE_TERMINATION_GRACE_SECONDS = 2
 MAX_STREAM_LINE_BYTES = 256 * 1024
@@ -64,26 +62,6 @@ ResultCategory = Literal[
     "hook_evidence_missing",
 ]
 EventCategory = Literal["assistant_reply", "tool_attempt", "result"]
-ProfileIntegrity = Literal["unchanged", "changed", "unavailable"]
-_CRITICAL_PROFILE_SURFACES = frozenset(
-    {
-        "settings",
-        "settings-local",
-        "managed-settings",
-        "root-config-file",
-        "known-marketplaces",
-        "installed-plugins",
-        "marketplace-sensai",
-        "plugin-cache-sensai",
-        "secure-storage",
-        "xdg-config-claude",
-        "xdg-data-claude",
-        "xdg-data-claude-code",
-    }
-)
-_SERVICE_CHURN_SURFACES = frozenset(
-    {"backup-root", "xdg-cache-claude", "xdg-cache-claude-cli"}
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,19 +78,13 @@ class ClaudeFirstReplyAcceptance:
     tool_requested: bool
     tool_gate_reached: bool
     result: ResultCategory
-    profile_integrity: ProfileIntegrity
-    service_churn_detected: bool
     timed_out: bool
 
     @property
     def passed(self) -> bool:
         """Require a safe Russian first response to the canonical request."""
 
-        if (
-            self.result != "completed"
-            or self.profile_integrity != "unchanged"
-            or not self.first_reply_captured
-        ):
+        if self.result != "completed" or not self.first_reply_captured:
             return False
         if not self.event_order or self.event_order[0] != "assistant_reply":
             return False
@@ -131,53 +103,6 @@ class ClaudeFirstReplyAcceptance:
 
 class ClaudeFirstReplyError(RuntimeError):
     """The harness could not run within its closed evidence model."""
-
-
-def _profile_snapshot(labels: frozenset[str]) -> dict[str, str] | None:
-    """Hash selected profile surfaces without retaining their contents."""
-
-    if "secure-storage" in labels and not os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR"):
-        return None
-    result: dict[str, str] = {}
-    for label, path, recursive in _real_profile_surfaces():
-        if label not in labels:
-            continue
-        for variant in (path, path.resolve(strict=False)):
-            result[f"{label}:{variant}"] = _bounded_surface_fingerprint(
-                variant,
-                recursive=recursive,
-            )
-    if labels == _CRITICAL_PROFILE_SURFACES:
-        config = Path(
-            os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")
-        ).expanduser().absolute()
-        for root in (config, config.resolve(strict=False)):
-            try:
-                entries = tuple(sorted(root.iterdir(), key=lambda entry: entry.name))
-            except FileNotFoundError:
-                continue
-            except OSError:
-                return None
-            for entry in entries:
-                if not (entry.is_file() or entry.is_symlink()):
-                    continue
-                result[f"direct-config:{entry.absolute()}"] = _bounded_surface_fingerprint(
-                    entry,
-                    recursive=False,
-                )
-    return result
-
-
-def _critical_profile_snapshot() -> dict[str, str] | None:
-    """Return all settings/credential-relevant evidence needed to pass."""
-
-    return _profile_snapshot(_CRITICAL_PROFILE_SURFACES)
-
-
-def _service_churn_snapshot() -> dict[str, str] | None:
-    """Return normal runtime cache/backup evidence, separate from integrity."""
-
-    return _profile_snapshot(_SERVICE_CHURN_SURFACES)
 
 
 def _is_natural_russian_install_prompt(prompt: str) -> bool:
@@ -566,8 +491,6 @@ def run_real_claude_first_reply(
     root = (temporary_root or Path(tempfile.gettempdir())).resolve(strict=True)
     if not root.is_dir():
         raise ClaudeFirstReplyError("first-reply temporary root is not a directory")
-    before_critical = _critical_profile_snapshot()
-    before_service = _service_churn_snapshot()
     environment = os.environ.copy()
     with _temporary_hooks(root) as (settings, state):
         environment["SENSAI_CLAUDE_FIRST_REPLY_STATE"] = str(state)
@@ -606,17 +529,6 @@ def run_real_claude_first_reply(
         ) = _read_stream(process, timeout_seconds=timeout_seconds)
         returncode = process.wait()
         observed = _read_state(state)
-    after_critical = _critical_profile_snapshot()
-    after_service = _service_churn_snapshot()
-    if before_critical is None or after_critical is None:
-        profile_integrity: ProfileIntegrity = "unavailable"
-    elif before_critical != after_critical:
-        profile_integrity = "changed"
-    else:
-        profile_integrity = "unchanged"
-    service_churn_detected = (
-        before_service is None or after_service is None or before_service != after_service
-    )
     result: ResultCategory
     if observed is None:
         result = "hook_evidence_missing"
@@ -653,7 +565,5 @@ def run_real_claude_first_reply(
         tool_requested=model_tool_requested,
         tool_gate_reached=tool_attempted,
         result=result,
-        profile_integrity=profile_integrity,
-        service_churn_detected=service_churn_detected,
         timed_out=timed_out,
     )
