@@ -382,7 +382,6 @@ def _read_stream(
     bool,
     bool,
     bool,
-    bool,
 ]:
     """Read stream-json without returning text, URLs, IDs, or error output."""
 
@@ -500,7 +499,6 @@ def _read_stream(
         tuple(order[:MAX_EVENT_ORDER_ENTRIES]),
         flags.result(),
         first_reply_captured,
-        result_seen,
         malformed,
         timed_out,
         ended_after_result,
@@ -561,7 +559,6 @@ def run_real_claude_first_reply(
             order,
             flags,
             first_reply_captured,
-            result_seen,
             malformed,
             timed_out,
             ended_after_result,
@@ -582,7 +579,7 @@ def run_real_claude_first_reply(
             result = "malformed_stream"
         elif returncode != 0 and not (ended_after_result or ended_after_first_text):
             result = "cli_failed"
-        elif not result_seen and (not ended_after_first_text or not first_reply_captured):
+        elif not ended_after_first_text or not first_reply_captured:
             result = "stream_evidence_missing"
         else:
             result = "completed"

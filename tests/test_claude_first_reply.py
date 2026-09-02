@@ -67,7 +67,10 @@ def text_block(index, text):
     }})
     if __MODE__ == "tool-before-first-text-complete":
         tool_block(index + 1)
-    if __MODE__ != "delta-without-complete-block":
+    if __MODE__ not in {
+        "delta-without-complete-block",
+        "delta-without-complete-block-then-result",
+    }:
         emit({
             "type": "stream_event",
             "event": {"type": "content_block_stop", "index": index}
@@ -286,6 +289,32 @@ def test_text_delta_without_its_completed_block_is_not_accepted(
     assert result.first_reply_captured
     assert result.result == "timed_out"
     assert result.timed_out
+
+
+def test_text_delta_without_stop_is_not_accepted_when_a_result_follows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _run(
+        tmp_path,
+        monkeypatch,
+        mode="delta-without-complete-block-then-result",
+    )
+
+    assert not result.passed
+    assert result.event_order == ("assistant_reply", "result")
+    assert result.first_reply_captured
+    assert result.result == "stream_evidence_missing"
+
+
+def test_empty_completed_text_block_is_not_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _run(tmp_path, monkeypatch, first_reply="   ")
+
+    assert not result.passed
+    assert result.event_order == ()
+    assert not result.first_reply_captured
+    assert result.result == "stream_evidence_missing"
 
 
 def test_first_reply_does_not_wait_for_repeated_denied_tools_or_a_result(
