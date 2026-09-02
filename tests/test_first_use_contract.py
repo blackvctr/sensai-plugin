@@ -31,88 +31,45 @@ def test_public_payload_is_built_from_the_single_skill_source() -> None:
     assert PACKAGED_SKILL.read_bytes() == SOURCE_SKILL.read_bytes()
 
 
-def _assert_auth_explanation(text: str) -> None:
-    normalized = " ".join(text.lower().split())
-    assert "sign-in" in normalized
-    assert "consultation context" in normalized
-    assert "continue" in normalized
-    assert "new chats" in normalized
-    assert "identifies the person's sensai workspace" not in normalized
-
-
-def _assert_context_evidence_behavior(text: str) -> None:
-    """Assert the three discovery decisions, without coupling to a sentence."""
+def _assert_post_install_consultation_contract(text: str) -> None:
+    """Keep the concise skill focused on the conversation after installation."""
 
     normalized = " ".join(text.lower().split())
-    assert "reliable context" in normalized
-    assert "uncertainty" in normalized
-    assert "what supports it" in normalized
-    assert "how confident" in normalized
-    assert "only if" in normalized and "remains insufficient" in normalized
-    assert "unsupported inference" in normalized and "as certain" in normalized
 
+    # First call: the person's stated request and facts are the consultation input.
+    assert "person's stated request and any stated work facts" in normalized
 
-def _assert_connector_first_positioning(text: str) -> None:
-    """Require an actionable connector/tool first step and optional workflows."""
+    # Sensai deliberately opens with this fixed discovery question.  One complete
+    # follow-up must carry facts already present in the person's opening message.
+    assert "fixed question" in normalized
+    assert "person's role" in normalized
+    assert "usual apps or sites" in normalized
+    assert "recurring work" in normalized
+    assert "one follow-up call" in normalized
+    assert "complete work context" in normalized
+    assert "opening message already contains these facts" in normalized
 
-    normalized = " ".join(text.lower().split())
-    connector_position = normalized.index("connector")
-    tool_position = normalized.index("built-in tool")
-    workflow_position = normalized.index("combined workflow")
+    # The next recommendation needs an observed result, not a guess.
+    assert "meaningful action" in normalized
+    assert "confirmed outcome" in normalized
 
-    assert connector_position < workflow_position
-    assert tool_position < workflow_position
-    assert "only when it is genuinely useful" in normalized
-    assert "fixed number of scenarios" not in normalized
+    # Sensai may receive concise English, but the person receives their language.
+    assert "speak to the person in their language" in normalized
 
+    # Sensitive information stays outside the consultation.
+    assert "not sending us sensitive information" in normalized
+    assert "environment variables" in normalized
+    assert "api tokens" in normalized
 
-def _assert_explicit_connector_guidance_request(text: str) -> None:
-    """Only a human-confirmed named setup request reaches the server as intent."""
-
-    normalized = " ".join(text.lower().split())
-    assert "guidance_request" in normalized
-    assert "subject" in normalized
-    assert "named connector" in normalized
-    assert "setup" in normalized
-    assert "activation" in normalized
-    assert "authorization" in normalized
-    assert "first verification" in normalized
-    assert "explicitly confirmed" in normalized
-    assert "first mentioning or recommending a connector is not confirmation" in normalized
-    assert "discovery" in normalized
-
-
-def _assert_initial_sensai_call(text: str) -> None:
-    normalized = " ".join(text.lower().split())
-    assert "call `tell_sensai` to start the consultation" in normalized
-    assert "consultation_start" not in normalized
-    assert "call `tell_sensai` with the current message" not in normalized
-    assert "never send the person's technical sensai launch command" in normalized
-    assert "run sensai" in normalized
-    assert "запусти sensai" in normalized
-    assert "explicitly stated work facts" in normalized
-    assert "exactly once more with a new request id" in normalized
-    assert "do not make a third automatic call" in normalized
-
-
-def _assert_codex_auth_recovery_restarts_before_retry(text: str) -> None:
-    """Codex login does not refresh an already-open MCP client session."""
-
-    normalized = " ".join(text.lower().split())
-    login_position = normalized.index("codex mcp login sensai")
-    restart_position = normalized.index("codex needs to be restarted")
-    retry_position = normalized.index("before one retry of the original request")
-
-    assert login_position < restart_position < retry_position
-    assert "do not retry through the already-open client session" in normalized
-    assert "reconnect or reload" not in normalized
-    assert "start a new codex chat or session" not in normalized
-    assert "codex-specific" in normalized
-    assert "do not invent a claude command" in normalized
+    # The post-installation skill no longer owns setup intent or host-specific
+    # recovery.  Those rules belonged to the old, much larger skill.
+    assert "guidance_request" not in normalized
+    assert "codex mcp login" not in normalized
+    assert "claude mcp login" not in normalized
 
 
 def _assert_claude_recovery_audience(text: str) -> None:
-    """Keep terminal recovery with the agent, not the person it assists."""
+    """README recovery keeps terminal work with the agent, not its user."""
 
     normalized = " ".join(text.lower().split())
     assert "path" in normalized
@@ -220,7 +177,9 @@ def test_readme_labels_windows_commands_by_shell_and_covers_powershell() -> None
     assert "Start-Process 'claude://code/new?q=%2Fsensai%3Asensai'" in claude_path
 
 
-def test_built_codex_and_claude_payloads_share_the_auth_explanation(tmp_path: Path) -> None:
+def test_built_payloads_keep_the_concise_post_install_consultation_contract(
+    tmp_path: Path,
+) -> None:
     built = build_packages(
         source_root=REPOSITORY_ROOT / "payload-src",
         output_root=tmp_path / "packages",
@@ -231,75 +190,10 @@ def test_built_codex_and_claude_payloads_share_the_auth_explanation(tmp_path: Pa
     claude = (built.claude / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
 
     assert codex == claude == source
-    _assert_auth_explanation(codex)
+    _assert_post_install_consultation_contract(codex)
 
 
-def test_built_payloads_calibrate_context_evidence_before_questioning_a_person(
-    tmp_path: Path,
-) -> None:
-    built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
-        output_root=tmp_path / "packages",
-    )
-
-    for payload in (built.codex, built.claude):
-        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
-        _assert_context_evidence_behavior(skill)
-
-
-def test_built_payloads_put_connectors_before_optional_workflows(tmp_path: Path) -> None:
-    built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
-        output_root=tmp_path / "packages",
-    )
-
-    for payload in (built.codex, built.claude):
-        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
-        _assert_connector_first_positioning(skill)
-
-
-def test_built_payloads_send_explicit_named_connector_guidance_requests(tmp_path: Path) -> None:
-    built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
-        output_root=tmp_path / "packages",
-    )
-
-    for payload in (built.codex, built.claude):
-        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
-        _assert_explicit_connector_guidance_request(skill)
-
-
-def test_built_payloads_start_sensai_without_a_client_control_flag(tmp_path: Path) -> None:
-    built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
-        output_root=tmp_path / "packages",
-    )
-
-    for payload in (built.codex, built.claude):
-        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
-        _assert_initial_sensai_call(skill)
-
-
-def test_built_payloads_restart_codex_before_auth_recovery_retry(tmp_path: Path) -> None:
-    built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
-        output_root=tmp_path / "packages",
-    )
-
-    for payload in (built.codex, built.claude):
-        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
-        _assert_codex_auth_recovery_restarts_before_retry(skill)
-
-
-def test_claude_recovery_keeps_terminal_work_with_the_agents(tmp_path: Path) -> None:
+def test_claude_recovery_keeps_terminal_work_with_the_agents() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
     recovery = _read_section(readme, "#### Known problems", "")
     _assert_claude_recovery_audience(recovery)
-
-    built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
-        output_root=tmp_path / "packages",
-    )
-    for payload in (built.codex, built.claude):
-        skill = (payload / "skills/sensai/SKILL.md").read_text(encoding="utf-8")
-        _assert_claude_recovery_audience(skill)
