@@ -44,19 +44,15 @@ _CODE_BLOCK = re.compile(r"```")
 
 
 class FirstReplyScenario(StrEnum):
-    """The two intentionally different first-contact cases."""
+    """The historical link-based first-contact case under acceptance."""
 
-    README_INSTALL = "readme_install"
     URL_BOOTSTRAP = "url_bootstrap"
 
 
-# These are deliberately natural Russian requests. The URL scenario is kept
-# separate because it starts from a repository link rather than README wording.
+# This is the natural Russian equivalent of the recorded link-based install
+# request. It is not a generic README-only installation scenario.
 _SCENARIO_PROMPTS: dict[FirstReplyScenario, str] = {
-    FirstReplyScenario.README_INSTALL: "Установи Sensai для меня.",
-    FirstReplyScenario.URL_BOOTSTRAP: (
-        "Установи Sensai: https://github.com/grayvectorblack/sensai-plugin"
-    ),
+    FirstReplyScenario.URL_BOOTSTRAP: "Установи Sensai https://github.com/grayvectorblack/sensai-plugin",
 }
 
 ResultCategory = Literal[
@@ -88,14 +84,12 @@ class ClaudeFirstReplyAcceptance:
 
     @property
     def passed(self) -> bool:
-        """Apply only the rule which belongs to the selected scenario."""
+        """Require a safe Russian first response to the canonical request."""
 
         if self.result != "completed" or not self.first_reply_captured:
             return False
         if not self.event_order or self.event_order[0] != "assistant_reply":
             return False
-        if self.scenario is FirstReplyScenario.URL_BOOTSTRAP:
-            return True
         return (
             self.cyrillic_present
             and self.cyrillic_preponderates

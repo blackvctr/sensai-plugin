@@ -35,6 +35,8 @@ if arguments[arguments.index("--model") + 1] != "sonnet":
     raise SystemExit(20)
 if "--verbose" not in arguments or "--include-partial-messages" not in arguments:
     raise SystemExit(21)
+if arguments[-1] != __EXPECTED_PROMPT__:
+    raise SystemExit(23)
 settings = json.loads(open(arguments[arguments.index("--settings") + 1], encoding="utf-8").read())
 hooks = settings["hooks"]
 if "matcher" in hooks["MessageDisplay"][0]:
@@ -96,6 +98,10 @@ else:
         .replace("__MODE__", repr(mode))
         .replace("__FIRST_REPLY__", repr(first_reply))
         .replace("__SECOND_REPLY__", repr(second_reply))
+        .replace(
+            "__EXPECTED_PROMPT__",
+            repr(_SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP]),
+        )
         .replace("__MUTATE_PROFILE__", repr(mutate_profile)),
         encoding="utf-8",
     )
@@ -109,7 +115,7 @@ def _run(
     mode: str = "tool-after-text",
     first_reply: str = "Я установлю Sensai самостоятельно.",
     second_reply: str = "",
-    scenario: FirstReplyScenario = FirstReplyScenario.README_INSTALL,
+    scenario: FirstReplyScenario = FirstReplyScenario.URL_BOOTSTRAP,
     mutate_profile: bool = False,
     timeout_seconds: float = 1,
 ) -> ClaudeFirstReplyAcceptance:
@@ -144,7 +150,7 @@ def _run(
     return result
 
 
-def test_readme_scenario_requires_russian_visible_reply_before_tool(
+def test_canonical_url_scenario_requires_russian_visible_reply_before_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result = _run(tmp_path, monkeypatch)
@@ -194,7 +200,7 @@ def test_english_first_reply_cannot_be_hidden_by_later_russian_text(
         ("```bash\nexample\n```", True, True),
     ],
 )
-def test_readme_scenario_rejects_technical_first_reply(
+def test_canonical_url_scenario_rejects_technical_first_reply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     first_reply: str,
@@ -206,21 +212,6 @@ def test_readme_scenario_rejects_technical_first_reply(
     assert not result.passed
     assert result.terminal_lexeme_present is expected_terminal
     assert result.code_block_present is expected_code
-
-
-def test_url_bootstrap_is_a_distinct_scenario_not_a_readme_language_claim(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    result = _run(
-        tmp_path,
-        monkeypatch,
-        scenario=FirstReplyScenario.URL_BOOTSTRAP,
-        first_reply="I will install it myself.",
-    )
-
-    assert result.passed
-    assert not result.cyrillic_present
-    assert not result.cyrillic_preponderates
 
 
 def test_profile_change_is_reported_without_disclosing_the_changed_value(
@@ -244,13 +235,17 @@ def test_timeout_is_safe_and_cleans_temporary_hooks(
 
 
 def test_all_hard_coded_scenarios_remain_natural_russian_install_requests() -> None:
-    assert all("Установ" in prompt for prompt in _SCENARIO_PROMPTS.values())
+    assert _SCENARIO_PROMPTS == {
+        FirstReplyScenario.URL_BOOTSTRAP: (
+            "Установи Sensai https://github.com/grayvectorblack/sensai-plugin"
+        )
+    }
 
 
 def test_invalid_hard_coded_scenario_input_fails_before_claude_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setitem(_SCENARIO_PROMPTS, FirstReplyScenario.README_INSTALL, "Install Sensai")
+    monkeypatch.setitem(_SCENARIO_PROMPTS, FirstReplyScenario.URL_BOOTSTRAP, "Install Sensai")
 
     with pytest.raises(ClaudeFirstReplyError, match="natural Russian"):
-        run_real_claude_first_reply(scenario=FirstReplyScenario.README_INSTALL)
+        run_real_claude_first_reply(scenario=FirstReplyScenario.URL_BOOTSTRAP)
