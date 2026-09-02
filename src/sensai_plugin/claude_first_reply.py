@@ -26,7 +26,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from sensai_plugin.claude_acceptance import _real_profile_fingerprint
+from sensai_plugin.claude_acceptance import _bounded_surface_fingerprint, _real_profile_surfaces
 
 CLAUDE_TIMEOUT_SECONDS = 45
 CLAUDE_TERMINATION_GRACE_SECONDS = 2
@@ -62,9 +62,28 @@ ResultCategory = Literal[
     "malformed_stream",
     "stream_evidence_missing",
     "hook_evidence_missing",
-    "profile_changed",
 ]
 EventCategory = Literal["assistant_reply", "tool_attempt", "result"]
+ProfileIntegrity = Literal["unchanged", "changed", "unavailable"]
+_CRITICAL_PROFILE_SURFACES = frozenset(
+    {
+        "settings",
+        "settings-local",
+        "managed-settings",
+        "root-config-file",
+        "known-marketplaces",
+        "installed-plugins",
+        "marketplace-sensai",
+        "plugin-cache-sensai",
+        "secure-storage",
+        "xdg-config-claude",
+        "xdg-data-claude",
+        "xdg-data-claude-code",
+    }
+)
+_SERVICE_CHURN_SURFACES = frozenset(
+    {"backup-root", "xdg-cache-claude", "xdg-cache-claude-cli"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,15 +97,22 @@ class ClaudeFirstReplyAcceptance:
     cyrillic_preponderates: bool
     terminal_lexeme_present: bool
     code_block_present: bool
-    blocked_tool: bool
+    tool_requested: bool
+    tool_gate_reached: bool
     result: ResultCategory
+    profile_integrity: ProfileIntegrity
+    service_churn_detected: bool
     timed_out: bool
 
     @property
     def passed(self) -> bool:
         """Require a safe Russian first response to the canonical request."""
 
-        if self.result != "completed" or not self.first_reply_captured:
+        if (
+            self.result != "completed"
+            or self.profile_integrity != "unchanged"
+            or not self.first_reply_captured
+        ):
             return False
         if not self.event_order or self.event_order[0] != "assistant_reply":
             return False
@@ -105,6 +131,53 @@ class ClaudeFirstReplyAcceptance:
 
 class ClaudeFirstReplyError(RuntimeError):
     """The harness could not run within its closed evidence model."""
+
+
+def _profile_snapshot(labels: frozenset[str]) -> dict[str, str] | None:
+    """Hash selected profile surfaces without retaining their contents."""
+
+    if "secure-storage" in labels and not os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR"):
+        return None
+    result: dict[str, str] = {}
+    for label, path, recursive in _real_profile_surfaces():
+        if label not in labels:
+            continue
+        for variant in (path, path.resolve(strict=False)):
+            result[f"{label}:{variant}"] = _bounded_surface_fingerprint(
+                variant,
+                recursive=recursive,
+            )
+    if labels == _CRITICAL_PROFILE_SURFACES:
+        config = Path(
+            os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")
+        ).expanduser().absolute()
+        for root in (config, config.resolve(strict=False)):
+            try:
+                entries = tuple(sorted(root.iterdir(), key=lambda entry: entry.name))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return None
+            for entry in entries:
+                if not (entry.is_file() or entry.is_symlink()):
+                    continue
+                result[f"direct-config:{entry.absolute()}"] = _bounded_surface_fingerprint(
+                    entry,
+                    recursive=False,
+                )
+    return result
+
+
+def _critical_profile_snapshot() -> dict[str, str] | None:
+    """Return all settings/credential-relevant evidence needed to pass."""
+
+    return _profile_snapshot(_CRITICAL_PROFILE_SURFACES)
+
+
+def _service_churn_snapshot() -> dict[str, str] | None:
+    """Return normal runtime cache/backup evidence, separate from integrity."""
+
+    return _profile_snapshot(_SERVICE_CHURN_SURFACES)
 
 
 def _is_natural_russian_install_prompt(prompt: str) -> bool:
@@ -143,7 +216,13 @@ def state():
     try:
         loaded = json.loads(STATE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        loaded = {}
+        return None
+    if not isinstance(loaded, dict) or set(loaded) != {
+        "seen_nonblank_text", "tool_attempted", "tool_before_text"
+    }:
+        return None
+    if not all(isinstance(loaded[key], bool) for key in loaded):
+        return None
     return {
         "seen_nonblank_text": loaded.get("seen_nonblank_text") is True,
         "tool_attempted": loaded.get("tool_attempted") is True,
@@ -163,23 +242,39 @@ except (json.JSONDecodeError, OSError):
 
 observation = state()
 if sys.argv[1] == "message-display":
+    if observation is None:
+        raise SystemExit(0)
     delta = payload.get("delta") if isinstance(payload, dict) else None
     if isinstance(delta, str) and delta.strip():
         observation["seen_nonblank_text"] = True
-    save(observation)
+    try:
+        save(observation)
+    except OSError:
+        pass
     raise SystemExit(0)
 
 if sys.argv[1] != "pre-tool-use":
     raise SystemExit(2)
+def deny():
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": "first-reply acceptance blocks tools"
+    }}))
+    raise SystemExit(0)
+
+# A missing or unwritable state file must never become permission to execute.
+# The later harness result is simply hook_evidence_missing, with no retry.
+if observation is None:
+    deny()
 observation["tool_attempted"] = True
 if not observation["seen_nonblank_text"]:
     observation["tool_before_text"] = True
-save(observation)
-print(json.dumps({"hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "deny",
-    "permissionDecisionReason": "first-reply acceptance blocks tools"
-}}))
+try:
+    save(observation)
+except OSError:
+    deny()
+deny()
 '''
 
 
@@ -332,12 +427,22 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
 
 def _read_stream(
     process: subprocess.Popen[bytes], *, timeout_seconds: float
-) -> tuple[tuple[EventCategory, ...], tuple[bool, bool, bool, bool], bool, bool, bool, bool]:
+) -> tuple[
+    tuple[EventCategory, ...],
+    tuple[bool, bool, bool, bool],
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+]:
     """Read stream-json without returning text, URLs, IDs, or error output."""
 
     assert process.stdout is not None
     selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
+    descriptor = process.stdout.fileno()
+    os.set_blocking(descriptor, False)
+    selector.register(descriptor, selectors.EVENT_READ)
     order: list[EventCategory] = []
     first_text_index: int | None = None
     first_reply_captured = False
@@ -345,52 +450,86 @@ def _read_stream(
     result_seen = False
     malformed = False
     timed_out = False
+    ended_after_result = False
+    end_of_stream = False
+    pending = bytearray()
     deadline = time.monotonic() + timeout_seconds
+
+    def consume(line: bytes) -> bool:
+        nonlocal first_text_index, first_reply_captured, malformed, result_seen
+        if len(line) > MAX_STREAM_LINE_BYTES:
+            malformed = True
+            return True
+        try:
+            outer = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            malformed = True
+            return True
+        if nested := _stream_event(outer):
+            if started := _stream_content_start(nested):
+                index, block_type = started
+                if block_type == "tool_use":
+                    order.append("tool_attempt")
+                elif block_type == "text" and first_text_index is None:
+                    first_text_index = index
+            if first_text_index is not None and (
+                delta := _stream_text_delta(nested, first_text_index)
+            ):
+                if not first_reply_captured and delta.strip():
+                    first_reply_captured = True
+                    order.append("assistant_reply")
+                if first_reply_captured:
+                    flags.add(delta)
+        if _event_is_result(outer):
+            result_seen = True
+            order.append("result")
+            return True
+        return False
+
     try:
         while True:
+            if result_seen:
+                ended_after_result = True
+                _terminate(process)
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 _terminate(process)
                 break
-            if process.poll() is not None:
-                line = process.stdout.readline(MAX_STREAM_LINE_BYTES + 1)
-                if not line:
+            ready = selector.select(0 if process.poll() is not None else remaining)
+            if not ready:
+                if process.poll() is not None:
+                    if pending:
+                        malformed = True
                     break
-            else:
-                if not selector.select(remaining):
-                    timed_out = True
-                    _terminate(process)
-                    break
-                line = process.stdout.readline(MAX_STREAM_LINE_BYTES + 1)
-            if len(line) > MAX_STREAM_LINE_BYTES or not line.endswith(b"\n"):
-                malformed = True
+                timed_out = True
                 _terminate(process)
                 break
-            try:
-                outer = json.loads(line)
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                malformed = True
+            while True:
+                try:
+                    chunk = os.read(descriptor, MAX_STREAM_LINE_BYTES + 1)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    end_of_stream = True
+                    if pending:
+                        malformed = True
+                    break
+                pending.extend(chunk)
+                if len(pending) > MAX_STREAM_LINE_BYTES and b"\n" not in pending:
+                    malformed = True
+                    break
+                while b"\n" in pending:
+                    line, _, remaining_bytes = pending.partition(b"\n")
+                    pending = bytearray(remaining_bytes)
+                    if consume(bytes(line)):
+                        break
+                if malformed or result_seen:
+                    break
+            if malformed or end_of_stream:
                 _terminate(process)
                 break
-            if nested := _stream_event(outer):
-                if started := _stream_content_start(nested):
-                    index, block_type = started
-                    if block_type == "tool_use":
-                        order.append("tool_attempt")
-                    elif block_type == "text" and first_text_index is None:
-                        first_text_index = index
-                if first_text_index is not None and (
-                    delta := _stream_text_delta(nested, first_text_index)
-                ):
-                    if not first_reply_captured and delta.strip():
-                        first_reply_captured = True
-                        order.append("assistant_reply")
-                    if first_reply_captured:
-                        flags.add(delta)
-            if _event_is_result(outer):
-                result_seen = True
-                order.append("result")
     finally:
         selector.close()
         if process.poll() is None:
@@ -402,6 +541,7 @@ def _read_stream(
         result_seen,
         malformed,
         timed_out,
+        ended_after_result,
     )
 
 
@@ -426,7 +566,8 @@ def run_real_claude_first_reply(
     root = (temporary_root or Path(tempfile.gettempdir())).resolve(strict=True)
     if not root.is_dir():
         raise ClaudeFirstReplyError("first-reply temporary root is not a directory")
-    before_profile = _real_profile_fingerprint()
+    before_critical = _critical_profile_snapshot()
+    before_service = _service_churn_snapshot()
     environment = os.environ.copy()
     with _temporary_hooks(root) as (settings, state):
         environment["SENSAI_CLAUDE_FIRST_REPLY_STATE"] = str(state)
@@ -454,16 +595,30 @@ def run_real_claude_first_reply(
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        order, flags, first_reply_captured, result_seen, malformed, timed_out = _read_stream(
-            process, timeout_seconds=timeout_seconds
-        )
+        (
+            order,
+            flags,
+            first_reply_captured,
+            result_seen,
+            malformed,
+            timed_out,
+            ended_after_result,
+        ) = _read_stream(process, timeout_seconds=timeout_seconds)
         returncode = process.wait()
         observed = _read_state(state)
-    after_profile = _real_profile_fingerprint()
-    if before_profile != after_profile:
-        result: ResultCategory = "profile_changed"
-        seen_nonblank_text = tool_attempted = tool_before_text = False
-    elif observed is None:
+    after_critical = _critical_profile_snapshot()
+    after_service = _service_churn_snapshot()
+    if before_critical is None or after_critical is None:
+        profile_integrity: ProfileIntegrity = "unavailable"
+    elif before_critical != after_critical:
+        profile_integrity = "changed"
+    else:
+        profile_integrity = "unchanged"
+    service_churn_detected = (
+        before_service is None or after_service is None or before_service != after_service
+    )
+    result: ResultCategory
+    if observed is None:
         result = "hook_evidence_missing"
         seen_nonblank_text = tool_attempted = tool_before_text = False
     else:
@@ -472,14 +627,17 @@ def run_real_claude_first_reply(
             result = "timed_out"
         elif malformed:
             result = "malformed_stream"
-        elif returncode != 0:
+        elif returncode != 0 and not ended_after_result:
             result = "cli_failed"
         elif not result_seen:
             result = "stream_evidence_missing"
         else:
             result = "completed"
+    model_tool_requested = "tool_attempt" in order
     if (
-        tool_before_text or (tool_attempted and (not order or order[0] != "assistant_reply"))
+        tool_before_text
+        or (tool_attempted and (not order or order[0] != "assistant_reply"))
+        or model_tool_requested != tool_attempted
     ) and result == "completed":
         result = "stream_evidence_missing"
     if seen_nonblank_text != first_reply_captured and result == "completed":
@@ -492,7 +650,10 @@ def run_real_claude_first_reply(
         cyrillic_preponderates=flags[1],
         terminal_lexeme_present=flags[2],
         code_block_present=flags[3],
-        blocked_tool=tool_attempted,
+        tool_requested=model_tool_requested,
+        tool_gate_reached=tool_attempted,
         result=result,
+        profile_integrity=profile_integrity,
+        service_churn_detected=service_churn_detected,
         timed_out=timed_out,
     )
