@@ -212,6 +212,7 @@ def _temporary_hooks(temporary_root: Path) -> Iterator[tuple[Path, Path]]:
     hook = root / "block_tools.py"
     state = root / "hook-state.json"
     settings = root / "settings.json"
+    run_error: BaseException | None = None
     try:
         hook.write_text(_hook_program(), encoding="utf-8")
         hook.chmod(0o700)
@@ -261,8 +262,19 @@ def _temporary_hooks(temporary_root: Path) -> Iterator[tuple[Path, Path]]:
         )
         settings.chmod(0o600)
         yield settings, state
+    except BaseException as error:
+        run_error = error
+        raise
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        try:
+            shutil.rmtree(root)
+        except OSError as cleanup_error:
+            if run_error is not None:
+                run_error.add_note("temporary first-reply cleanup also failed")
+            else:
+                raise ClaudeFirstReplyError(
+                    "temporary first-reply cleanup failed"
+                ) from cleanup_error
 
 
 def _read_state(state: Path) -> tuple[bool, bool, bool] | None:

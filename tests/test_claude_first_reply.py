@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import shutil
 import textwrap
 from pathlib import Path
 
@@ -260,6 +261,45 @@ def test_harness_has_no_profile_or_credential_reader() -> None:
         "os.scandir",
     ):
         assert forbidden not in source
+
+
+def test_owned_temporary_cleanup_failure_is_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_rmtree = shutil.rmtree
+
+    def fail_removal(_path: Path) -> None:
+        raise OSError("forced cleanup failure")
+
+    monkeypatch.setattr(shutil, "rmtree", fail_removal)
+    with (
+        pytest.raises(ClaudeFirstReplyError, match="temporary first-reply cleanup failed"),
+        first_reply_module._temporary_hooks(tmp_path),
+    ):
+        pass
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+    for root in tmp_path.glob("sensai-claude-first-reply-*"):
+        original_rmtree(root)
+
+
+def test_owned_cleanup_failure_keeps_the_original_run_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_rmtree = shutil.rmtree
+
+    def fail_removal(_path: Path) -> None:
+        raise OSError("forced cleanup failure")
+
+    monkeypatch.setattr(shutil, "rmtree", fail_removal)
+    with (
+        pytest.raises(RuntimeError, match="original run failure") as captured,
+        first_reply_module._temporary_hooks(tmp_path),
+    ):
+        raise RuntimeError("original run failure")
+    assert "temporary first-reply cleanup also failed" in captured.value.__notes__
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+    for root in tmp_path.glob("sensai-claude-first-reply-*"):
+        original_rmtree(root)
 
 
 def test_timeout_is_safe_and_cleans_temporary_hooks(
