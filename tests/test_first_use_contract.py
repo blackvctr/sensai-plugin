@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sensai_plugin.claude_first_reply import (
+    _SCENARIO_PROMPTS,
+    FirstReplyScenario,
+)
 from sensai_plugin.package_builder import (
     BuiltPackages,
     plugin_version,
@@ -172,6 +176,26 @@ def test_readme_requires_russian_first_install_reply_before_general_steps() -> N
     assert "if they write `Установи Sensai ...`, reply in Russian" in normalized
     assert "install Sensai yourself" in normalized
     assert "do not ask them to use a terminal" in normalized
+
+
+def test_public_copy_paste_prompts_make_the_first_reply_safe_and_match_the_harness() -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    russian_prompt = (
+        "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
+        "sensai-plugin/main/README.md\n"
+        "Перед любым действием сначала коротко ответь по-русски, что установкой "
+        "займёшься ты. Всё сделай сам, без моих действий. Затем продолжай установку."
+    )
+    english_prompt = (
+        "Install Sensai https://raw.githubusercontent.com/blackvctr/"
+        "sensai-plugin/main/README.md\n"
+        "Before doing anything, briefly reply in English that you will handle the installation. "
+        "Do not ask me to do anything. Then continue the installation."
+    )
+
+    assert f"```text\n{russian_prompt}\n```" in readme
+    assert f"```text\n{english_prompt}\n```" in readme
+    assert _SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP] == russian_prompt
 
 
 def test_readme_requires_explicit_install_request_and_keeps_credentials_out_of_chat() -> None:

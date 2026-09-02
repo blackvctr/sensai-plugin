@@ -315,7 +315,10 @@ def test_timeout_is_safe_and_cleans_temporary_hooks(
 def test_all_hard_coded_scenarios_remain_natural_russian_install_requests() -> None:
     assert _SCENARIO_PROMPTS == {
         FirstReplyScenario.URL_BOOTSTRAP: (
-            "Установи Sensai https://github.com/grayvectorblack/sensai-plugin"
+            "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
+            "sensai-plugin/main/README.md\n"
+            "Перед любым действием сначала коротко ответь по-русски, что установкой "
+            "займёшься ты. Всё сделай сам, без моих действий. Затем продолжай установку."
         )
     }
 

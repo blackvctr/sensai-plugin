@@ -47,10 +47,15 @@ class FirstReplyScenario(StrEnum):
     URL_BOOTSTRAP = "url_bootstrap"
 
 
-# This is the natural Russian equivalent of the recorded link-based install
-# request. It is not a generic README-only installation scenario.
+# This is the Russian public copy-paste installation request from README.
+# Keeping it literal makes the real first-reply check cover that exact path.
 _SCENARIO_PROMPTS: dict[FirstReplyScenario, str] = {
-    FirstReplyScenario.URL_BOOTSTRAP: "Установи Sensai https://github.com/grayvectorblack/sensai-plugin",
+    FirstReplyScenario.URL_BOOTSTRAP: (
+        "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
+        "sensai-plugin/main/README.md\n"
+        "Перед любым действием сначала коротко ответь по-русски, что установкой "
+        "займёшься ты. Всё сделай сам, без моих действий. Затем продолжай установку."
+    ),
 }
 
 ResultCategory = Literal[

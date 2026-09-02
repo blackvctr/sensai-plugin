@@ -9,10 +9,22 @@ Sensai may return advice, architecture, detailed implementation instructions, an
 1. You need [ChatGPT Desktop](https://chatgpt.com/download/) with an OpenAI subscription, or [Claude Desktop](https://claude.ai/download) with an Anthropic subscription.
 2. In ChatGPT Desktop, make sure you are on the Codex tab. In Claude Desktop, make sure you are on the Code tab.
 3. Use a strong model, especially while installing the plugin. At the time of writing, use GPT-5.6 Terra rather than Luna; in Claude Desktop, use Opus rather than Sonnet.
-4. Start a new chat with this instruction:
+4. Start a new chat and copy one of these instructions. Choose the Russian
+   version for a Russian conversation and the English version for an English
+   conversation.
+
+Russian:
+
+```text
+Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
+Перед любым действием сначала коротко ответь по-русски, что установкой займёшься ты. Всё сделай сам, без моих действий. Затем продолжай установку.
+```
+
+English:
 
 ```text
 Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
+Before doing anything, briefly reply in English that you will handle the installation. Do not ask me to do anything. Then continue the installation.
 ```
 
 ## Installation after explicit request (AI agent part)
