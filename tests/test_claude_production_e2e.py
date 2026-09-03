@@ -149,9 +149,17 @@ class _Call:
 
 
 class _FakeDriver(ClaudeDriver):
-    def __init__(self, agent_results: Sequence[AgentEvidence], *, connected: bool = True) -> None:
+    def __init__(
+        self,
+        agent_results: Sequence[AgentEvidence],
+        *,
+        connected: bool = True,
+        raise_on_agent_call: int | None = None,
+    ) -> None:
         self._agent_results = iter(agent_results)
         self.connected = connected
+        self._raise_on_agent_call = raise_on_agent_call
+        self._agent_calls = 0
         self.calls: list[_Call] = []
 
     def run_agent(
@@ -175,6 +183,9 @@ class _FakeDriver(ClaudeDriver):
                 expected_session,
             )
         )
+        self._agent_calls += 1
+        if self._agent_calls == self._raise_on_agent_call:
+            raise ProductionE2EError("telegram_start_stream_invalid")
         return next(self._agent_results)
 
     def mcp_configuration_observed(
@@ -413,6 +424,30 @@ def test_failed_telegram_turn_still_calls_forget_me_before_temporary_profile_is_
     assert len(driver.calls) == 6
     assert driver.calls[-1].command[-1].startswith("Заверши проверку")
     assert not list((profile / "runs").iterdir())
+
+
+def test_first_telegram_exception_cleans_up_with_the_installation_session(tmp_path: Path) -> None:
+    driver = _FakeDriver(
+        (
+            _evidence(
+                ToolKind.MARKETPLACE_ADD,
+                ToolKind.PLUGIN_INSTALL,
+                ToolKind.LOGIN,
+                ToolKind.NEW_CHAT_URI,
+                texts=(_text(expected=True), _text(expected=True)),
+            ),
+            _evidence(ToolKind.FORGET_ME),
+        ),
+        raise_on_agent_call=2,
+    )
+
+    with pytest.raises(ProductionE2EError, match="telegram_start_stream_invalid"):
+        _runner(_profile(tmp_path), driver).run()
+
+    installation = driver.calls[1]
+    cleanup = driver.calls[-1]
+    assert _argument(installation.command, "--session-id") == _argument(cleanup.command, "--resume")
+    assert installation.expected_session == cleanup.expected_session
 
 
 def test_cleanup_failure_is_reported_and_temporary_profile_is_still_deleted(tmp_path: Path) -> None:

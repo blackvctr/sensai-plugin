@@ -903,7 +903,7 @@ class ProductionSensaiE2E:
                         environment=run.environment,
                         timeout_seconds=FORGET_ME_TIMEOUT_SECONDS,
                         expected_visible_messages=(),
-                        expected_session=telegram_session,
+                        expected_session=cleanup_session,
                         expected_new_chat_uri=None,
                     )
                     self._require_tool_turn(cleanup, ToolKind.FORGET_ME, "forget_me", None)
