@@ -11,5 +11,5 @@
   "name": "sensai",
   "repository": "https://github.com/blackvctr/sensai-plugin",
   "skills": "./skills/",
-  "version": "0.2.11"
+  "version": "0.2.12"
 }

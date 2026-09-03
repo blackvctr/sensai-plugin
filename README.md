@@ -69,13 +69,22 @@ Sign-in needs a terminal on its input, and your Bash tool has none: run bare, `c
 ```bash
 script -q /dev/null claude mcp login plugin:sensai:sensai                     # macOS
 script -q -c "claude mcp login plugin:sensai:sensai" /dev/null                # Linux
-start "" /min cmd /c claude mcp login plugin:sensai:sensai                    # Windows, CMD
-Start-Process cmd -ArgumentList '/c','claude mcp login plugin:sensai:sensai' -WorkingDirectory 'C:\' -WindowStyle Minimized    # Windows, PowerShell
 ```
 
-The argument order differs between macOS and Linux because they ship different `script` implementations. Windows needs two lines because it ships two shells: in PowerShell `start` is an alias for `Start-Process`, which reads the empty `""` title as the program to run, so the CMD line fails there. Pick by shell, not by operating system. `-WorkingDirectory 'C:\'` matters when your shell sits on a path Windows cannot use as a working directory, such as a WSL mount; without it the launch dies with `Windows cannot find '\\'` and writes nothing to any log. On macOS and Linux no window appears at all; on Windows a minimized console opens and closes itself. Either way the person only chooses their Google account in the browser, and the command finishes on its own.
+The argument order differs between macOS and Linux because they ship different `script` implementations. On Windows, run this one PowerShell block as a unit:
 
-Confirm the result with `claude mcp get plugin:sensai:sensai`. Before sign-in it reports `Status: ! Needs authentication`; after a successful sign-in that line changes. Treat the changed status as the signal to continue, not the login command's own exit.
+```powershell
+# Windows, PowerShell
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($userPath) { $env:Path = "$userPath;$env:Path" }
+$claude = (Get-Command claude.exe -CommandType Application -ErrorAction Stop).Source
+$command = '""{0}" mcp login plugin:sensai:sensai"' -f $claude
+$login = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', $command) -WorkingDirectory $env:USERPROFILE -WindowStyle Hidden -Wait -PassThru
+if ($login.ExitCode -ne 0) { throw 'Sensai sign-in did not complete.' }
+& $claude mcp get plugin:sensai:sensai
+```
+
+The PowerShell block temporarily prepends the Windows user's `Path`, then finds the Windows `claude.exe` program before starting anything. This matters when PowerShell was launched from WSL, whose copied environment can omit the Windows user path and ordinary executable-extension lookup; it does not change the saved Windows environment. The block starts that exact program through `cmd.exe`, which gives the login command a terminal, keeps the window hidden, and waits for it to finish. The final `mcp get` runs through the same Windows program and user profile. Before sign-in it reports `Status: ! Needs authentication`; after a successful sign-in that line changes. Treat the changed status as the signal to continue, not the login command's exit alone. The person only chooses their Google account in the browser. A real later sign-in and its changed `mcp get` status are still required to prove this Windows path works.
 
 Then open the new session yourself, again using the line for the shell you are running in:
 
@@ -133,6 +142,7 @@ Recover from these yourself and explain the reason to the person in their langua
    part of this flow. When `claude mcp get plugin:sensai:sensai` reports `Needs authentication`, it is
    Sensai asking, not the CLI.
 
-6. If sign-in fails with `Client ID '<id>' not found`, run `claude mcp logout plugin:sensai:sensai`
-   and repeat the sign-in command; it then succeeds. Handle this silently and continue: the person
-   needs a second trip through the Google window, nothing more.
+6. If sign-in reports exactly `Client ID '<id>' not found`, run `claude mcp logout plugin:sensai:sensai`
+   and repeat the sign-in command once. This is one exceptional recovery for that verified error,
+   not a general retry loop. Handle it silently and continue: the person needs a second trip through
+   the Google window, nothing more.

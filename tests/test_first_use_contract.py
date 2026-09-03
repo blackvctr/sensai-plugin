@@ -176,17 +176,50 @@ def test_readme_requires_explicit_install_request_and_keeps_credentials_out_of_c
     assert "never enter the conversation or another tool" in readme
 
 
-def test_readme_labels_windows_commands_by_shell_and_covers_powershell() -> None:
+def test_readme_uses_a_waited_hidden_powershell_claude_login() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
     claude_path = _read_section(readme, "### Claude Desktop", "#### Known problems")
-
-    assert "# Windows\n" not in claude_path
-    assert "# Windows, CMD" in claude_path
-    assert "# Windows, PowerShell" in claude_path
-    assert (
-        "Start-Process cmd -ArgumentList '/c','claude mcp login plugin:sensai:sensai' "
-        "-WorkingDirectory 'C:\\' -WindowStyle Minimized" in claude_path
+    login_path = _read_section(
+        claude_path,
+        "Sign-in needs a terminal on its input",
+        "Then open the new session yourself",
     )
+
+    assert "# Windows\n" not in login_path
+    assert "# Windows, PowerShell" in login_path
+    assert (
+        "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')"
+        in login_path
+    )
+    assert "if ($userPath) { $env:Path = \"$userPath;$env:Path\" }" in login_path
+    assert (
+        "$claude = (Get-Command claude.exe -CommandType Application -ErrorAction Stop).Source"
+        in login_path
+    )
+    assert "C:\\Users\\" not in login_path
+    assert (
+        "$command = '\"\"{0}\" mcp login plugin:sensai:sensai\"' -f $claude"
+        in login_path
+    )
+    assert (
+        "$login = Start-Process -FilePath $env:ComSpec" in login_path
+    )
+    assert "@('/d', '/s', '/c', $command)" in login_path
+    assert "-WorkingDirectory $env:USERPROFILE" in login_path
+    assert "-WindowStyle Hidden -Wait -PassThru" in login_path
+    assert "if ($login.ExitCode -ne 0)" in login_path
+    assert "start \"\" /min" not in login_path
+    assert "Start-Process cmd -ArgumentList" not in login_path
+    assert "--no-browser" not in login_path
+    assert "Minimized" not in login_path
+    assert "& $claude mcp get plugin:sensai:sensai" in login_path
+    assert login_path.index("$userPath =") < login_path.index("Get-Command claude")
+    assert login_path.index("-Wait -PassThru") < login_path.index(
+        "if ($login.ExitCode -ne 0)"
+    ) < login_path.index(
+        "& $claude mcp get plugin:sensai:sensai"
+    )
+    assert "The person only chooses their Google account in the browser." in login_path
     assert "Start-Process 'claude://code/new?q=%2Fsensai%3Asensai'" in claude_path
 
 
