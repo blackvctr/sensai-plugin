@@ -87,6 +87,11 @@ def _evidence(
             )
             for tool in tools
         ),
+        event_order=(
+            ("visible", *(tool.value for tool in tools), "visible")
+            if texts
+            else tuple(tool.value for tool in tools)
+        ),
     )
 
 
@@ -158,9 +163,9 @@ def _successful_driver() -> _FakeDriver:
     return _FakeDriver(
         (
             _evidence(
-                ToolKind.LOGIN,
                 ToolKind.MARKETPLACE_ADD,
                 ToolKind.PLUGIN_INSTALL,
+                ToolKind.LOGIN,
                 ToolKind.NEW_CHAT_URI,
                 texts=(_text(expected=True), _text(expected=True)),
             ),
@@ -289,9 +294,9 @@ def test_runner_requires_exact_two_russian_installation_messages(tmp_path: Path)
     driver = _FakeDriver(
         (
             _evidence(
-                ToolKind.LOGIN,
                 ToolKind.MARKETPLACE_ADD,
                 ToolKind.PLUGIN_INSTALL,
+                ToolKind.LOGIN,
                 ToolKind.NEW_CHAT_URI,
                 texts=(_text(expected=True), _text(expected=False)),
             ),
@@ -311,9 +316,9 @@ def test_failed_telegram_turn_still_calls_forget_me_before_temporary_profile_is_
     driver = _FakeDriver(
         (
             _evidence(
-                ToolKind.LOGIN,
                 ToolKind.MARKETPLACE_ADD,
                 ToolKind.PLUGIN_INSTALL,
+                ToolKind.LOGIN,
                 ToolKind.NEW_CHAT_URI,
                 texts=(_text(expected=True), _text(expected=True)),
             ),
@@ -335,9 +340,9 @@ def test_cleanup_failure_is_reported_and_temporary_profile_is_still_deleted(tmp_
     driver = _FakeDriver(
         (
             _evidence(
-                ToolKind.LOGIN,
                 ToolKind.MARKETPLACE_ADD,
                 ToolKind.PLUGIN_INSTALL,
+                ToolKind.LOGIN,
                 ToolKind.NEW_CHAT_URI,
                 texts=(_text(expected=True), _text(expected=True)),
             ),
