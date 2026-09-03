@@ -44,13 +44,23 @@ class ClaudeVisibleMessage:
 
 
 @dataclass(frozen=True, slots=True)
-class GoogleLoginStarted:
-    """The real Google consent flow became visible in the local browser."""
+class SensaiLoginStarted:
+    """Claude started its ordinary ``mcp login`` command for Sensai.
+
+    This is deliberately an observation about the command and its protocol,
+    not a claim about a particular browser window.  The production runner
+    never reads, records, or interprets a browser screen, an OAuth URL, or an
+    authorization code.
+    """
 
 
 @dataclass(frozen=True, slots=True)
-class GoogleLoginCompleted:
-    """The same Google consent flow returned successfully to Claude."""
+class SensaiLoginCompleted:
+    """The ordinary Sensai ``mcp login`` command completed successfully.
+
+    A later ``mcp get`` status observation is still required: a successful
+    command exit by itself is not evidence that the connection is usable.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,8 +79,8 @@ class ClaudeNewChatUriAttempt:
 
 type InstallationEvent = (
     ClaudeVisibleMessage
-    | GoogleLoginStarted
-    | GoogleLoginCompleted
+    | SensaiLoginStarted
+    | SensaiLoginCompleted
     | SensaiConnectionObserved
     | ClaudeNewChatUriAttempt
 )
@@ -108,8 +118,8 @@ def evaluate_installation_transcript(
 
     The decisive event sequence is intentionally short and closed:
 
-    1. the exact authorization message before any Google consent;
-    2. one real Google login start and completion;
+    1. the exact authorization message before the normal Sensai login;
+    2. one normal Sensai login command start and completion;
     3. a successful Sensai connection observation;
     4. one ``claude://code/new`` URI whose request exactly matches README; and
     5. the exact ready message after that attempt.
@@ -128,8 +138,8 @@ def evaluate_installation_transcript(
 
     expected_event_types = (
         ClaudeVisibleMessage,
-        GoogleLoginStarted,
-        GoogleLoginCompleted,
+        SensaiLoginStarted,
+        SensaiLoginCompleted,
         SensaiConnectionObserved,
         ClaudeNewChatUriAttempt,
         ClaudeVisibleMessage,
@@ -169,8 +179,8 @@ def _record_additional_event_failures(
 ) -> None:
     """Preserve concrete missing/duplicate evidence beside an order failure."""
 
-    starts = sum(isinstance(event, GoogleLoginStarted) for event in events)
-    completions = sum(isinstance(event, GoogleLoginCompleted) for event in events)
+    starts = sum(isinstance(event, SensaiLoginStarted) for event in events)
+    completions = sum(isinstance(event, SensaiLoginCompleted) for event in events)
     if starts != 1:
         failures.append("google_login_start_count_invalid")
     if completions != 1:

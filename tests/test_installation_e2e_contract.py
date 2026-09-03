@@ -7,10 +7,10 @@ from sensai_plugin.installation_e2e_contract import (
     README_PATH,
     ClaudeNewChatUriAttempt,
     ClaudeVisibleMessage,
-    GoogleLoginCompleted,
-    GoogleLoginStarted,
     InstallationTranscript,
     PublicReadmeContract,
+    SensaiLoginCompleted,
+    SensaiLoginStarted,
     SensaiConnectionObserved,
     _public_contract_from_markdown,
     evaluate_installation_transcript,
@@ -30,8 +30,8 @@ def _valid_transcript() -> InstallationTranscript:
             ClaudeVisibleMessage(
                 text=contract.russian_authorization_message,
             ),
-            GoogleLoginStarted(),
-            GoogleLoginCompleted(),
+            SensaiLoginStarted(),
+            SensaiLoginCompleted(),
             SensaiConnectionObserved(connected=True),
             ClaudeNewChatUriAttempt(
                 uri="claude://code/new?" + urlencode({"q": contract.russian_new_chat_request}),
@@ -128,7 +128,7 @@ def test_rejects_english_visible_message_by_unicode_letters() -> None:
 def test_rejects_duplicate_google_login_even_when_everything_else_is_observed() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events.insert(2, GoogleLoginStarted())
+    events.insert(2, SensaiLoginStarted())
 
     report = evaluate_installation_transcript(
         InstallationTranscript(
