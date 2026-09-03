@@ -17,7 +17,6 @@ Russian:
 
 ```text
 Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
-Перед любым действием сначала коротко ответь по-русски, что установкой займёшься ты. Всё сделай сам, без моих действий. Затем продолжай установку.
 ```
 
 English:
