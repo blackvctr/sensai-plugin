@@ -192,25 +192,32 @@ def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
     """Extract exactly the Russian install prompt and new-chat request from README."""
 
     lines = markdown.splitlines()
-    try:
-        russian_heading = lines.index("Russian:")
-    except ValueError as error:
-        raise ValueError("README has no Russian installation prompt heading") from error
+    human_installation = _markdown_section(lines, "## Installation (if you are human)")
+    russian_heading = _line_index(human_installation, "Russian:")
 
     prompt_fence = russian_heading + 1
-    while prompt_fence < len(lines) and not lines[prompt_fence].strip():
+    while prompt_fence < len(human_installation) and not human_installation[prompt_fence].strip():
         prompt_fence += 1
-    if prompt_fence >= len(lines) or lines[prompt_fence] != "```text":
+    if prompt_fence >= len(human_installation) or human_installation[prompt_fence] != "```text":
         raise ValueError("README Russian installation prompt is not a text code block")
     prompt_end = prompt_fence + 1
-    while prompt_end < len(lines) and lines[prompt_end] != "```":
+    while prompt_end < len(human_installation) and human_installation[prompt_end] != "```":
         prompt_end += 1
-    prompt_lines = lines[prompt_fence + 1 : prompt_end]
-    if prompt_end == len(lines) or len(prompt_lines) != 1 or not prompt_lines[0].strip():
+    prompt_lines = human_installation[prompt_fence + 1 : prompt_end]
+    if (
+        prompt_end == len(human_installation)
+        or len(prompt_lines) != 1
+        or not prompt_lines[0].strip()
+    ):
         raise ValueError("README Russian installation prompt must be exactly one nonempty line")
 
+    agent_installation = _markdown_section(
+        lines,
+        "## Installation after explicit request (AI agent part)",
+    )
+    claude_desktop = _markdown_subsection(agent_installation, "### Claude Desktop")
     russian_link = next(
-        (line for line in lines if line.startswith("- Russian: [")),
+        (line for line in claude_desktop if line.startswith("- Russian: [")),
         None,
     )
     if russian_link is None:
@@ -227,6 +234,37 @@ def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
         russian_install_prompt=prompt_lines[0],
         russian_new_chat_request=uri_request,
     )
+
+
+def _markdown_section(lines: list[str], heading: str) -> list[str]:
+    """Return one level-two Markdown section, excluding neighboring sections."""
+
+    start = _line_index(lines, heading)
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
+    return lines[start + 1 : end]
+
+
+def _markdown_subsection(lines: list[str], heading: str) -> list[str]:
+    """Return one level-three Markdown subsection, excluding sibling hosts."""
+
+    start = _line_index(lines, heading)
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith("### ")),
+        len(lines),
+    )
+    return lines[start + 1 : end]
+
+
+def _line_index(lines: list[str], expected: str) -> int:
+    """Locate one exact structural heading with a clear source error."""
+
+    try:
+        return lines.index(expected)
+    except ValueError as error:
+        raise ValueError(f"README has no expected heading: {expected}") from error
 
 
 def _is_predominantly_cyrillic(text: str) -> bool:
@@ -279,5 +317,5 @@ def _new_chat_request(uri: str) -> str | None:
         return None
     if len(parameters) != 1 or parameters[0][0] != "q":
         return None
-    request = parameters[0][1].strip()
+    request = parameters[0][1]
     return request or None

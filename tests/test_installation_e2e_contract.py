@@ -53,6 +53,24 @@ def test_reads_the_current_public_russian_prompt_and_new_chat_request() -> None:
     )
 
 
+def test_ignores_an_unrelated_russian_prompt_before_the_human_installation_section() -> None:
+    markdown = README_PATH.read_text(encoding="utf-8")
+    unrelated_prefix = "Russian:\n\n```text\nНе та строка\n```\n\n"  # noqa: RUF001 - fixture
+
+    assert _public_contract_from_markdown(unrelated_prefix + markdown) == _public_contract()
+
+
+def test_ignores_an_unrelated_russian_link_in_the_chatgpt_desktop_section() -> None:
+    markdown = README_PATH.read_text(encoding="utf-8")
+    unrelated_link = (
+        "### ChatGPT Desktop\n\n"
+        "- Russian: [Другой разговор](claude://code/new?q=%D0%94%D1%80%D1%83%D0%B3%D0%BE%D0%B9)\n"
+    )
+    altered = markdown.replace("### ChatGPT Desktop\n", unrelated_link, 1)
+
+    assert _public_contract_from_markdown(altered) == _public_contract()
+
+
 def test_structurally_complete_transcript_reports_the_current_readme_content_gap() -> None:
     report = evaluate_installation_transcript(_valid_transcript())
 
@@ -189,6 +207,29 @@ def test_rejects_a_different_russian_new_chat_request() -> None:
         "wrong_new_chat_uri",
         "readme_canonical_visible_messages_missing",
     )
+
+
+def test_rejects_invisible_leading_or_trailing_whitespace_in_new_chat_request() -> None:
+    transcript = _valid_transcript()
+    request = _public_contract().russian_new_chat_request
+
+    for changed_request in (f" {request}", f"{request} "):
+        events = list(transcript.events)
+        events[-1] = ClaudeNewChatUriAttempt(
+            uri="claude://code/new?" + urlencode({"q": changed_request}),
+        )
+        report = evaluate_installation_transcript(
+            InstallationTranscript(
+                public_prompt=transcript.public_prompt,
+                model=transcript.model,
+                events=tuple(events),
+            )
+        )
+
+        assert report.failures == (
+            "wrong_new_chat_uri",
+            "readme_canonical_visible_messages_missing",
+        )
 
 
 def test_rejects_a_malformed_claude_new_chat_uri_without_crashing() -> None:
