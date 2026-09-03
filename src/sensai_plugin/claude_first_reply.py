@@ -26,6 +26,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
+from sensai_plugin.installation_e2e_contract import CLAUDE_SONNET_5_MODEL
+
 CLAUDE_TIMEOUT_SECONDS = 45
 CLAUDE_TERMINATION_GRACE_SECONDS = 2
 MAX_STREAM_LINE_BYTES = 256 * 1024
@@ -49,13 +51,13 @@ class FirstReplyScenario(StrEnum):
 
 # This is the Russian public copy-paste installation request from README.
 # Keeping it literal makes the real first-reply check cover that exact path.
+_CANONICAL_RUSSIAN_INSTALL_PROMPT = (
+    "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
+    "sensai-plugin/main/README.md"
+)
+
 _SCENARIO_PROMPTS: dict[FirstReplyScenario, str] = {
-    FirstReplyScenario.URL_BOOTSTRAP: (
-        "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
-        "sensai-plugin/main/README.md\n"
-        "Перед любым действием сначала коротко ответь по-русски, что установкой "
-        "займёшься ты. Всё сделай сам, без моих действий. Затем продолжай установку."
-    ),
+    FirstReplyScenario.URL_BOOTSTRAP: _CANONICAL_RUSSIAN_INSTALL_PROMPT,
 }
 
 ResultCategory = Literal[
@@ -110,19 +112,16 @@ class ClaudeFirstReplyError(RuntimeError):
     """The harness could not run within its closed evidence model."""
 
 
-def _is_natural_russian_install_prompt(prompt: str) -> bool:
-    """Reject a changed harness input before it reaches the real profile."""
+def _is_canonical_russian_install_prompt(prompt: str) -> bool:
+    """Reject stale or changed harness input before it reaches Claude."""
 
-    # A repository URL naturally contributes more Latin letters than a short
-    # Russian sentence, so language is bound to Russian letters and the verb,
-    # rather than to a whole-string character-count comparison.
-    return _CYRILLIC.search(prompt) is not None and "установ" in prompt.lower()
+    return prompt == _CANONICAL_RUSSIAN_INSTALL_PROMPT
 
 
 def _prompt_for(scenario: FirstReplyScenario) -> str:
     prompt = _SCENARIO_PROMPTS[scenario]
-    if not _is_natural_russian_install_prompt(prompt):
-        raise ClaudeFirstReplyError("first-reply scenario input is not natural Russian")
+    if not _is_canonical_russian_install_prompt(prompt):
+        raise ClaudeFirstReplyError("first-reply scenario input is not the canonical README prompt")
     return prompt
 
 
@@ -536,7 +535,7 @@ def run_real_claude_first_reply(
                 claude_executable,
                 "-p",
                 "--model",
-                "sonnet",
+                CLAUDE_SONNET_5_MODEL,
                 "--output-format",
                 "stream-json",
                 "--verbose",

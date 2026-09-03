@@ -20,6 +20,8 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from sensai_plugin.installation_e2e_contract import CLAUDE_SONNET_5_MODEL
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - the supported local runner is POSIX/WSL.
@@ -28,7 +30,7 @@ except ImportError:  # pragma: no cover - the supported local runner is POSIX/WS
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEVELOPMENT_ROOT = REPOSITORY_ROOT.parents[1]
-CLAUDE_E2E_MODEL = "claude-sonnet-5"
+CLAUDE_E2E_MODEL = CLAUDE_SONNET_5_MODEL
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
 _OWNER_MARKER_NAME = ".sensai-e2e-owner.json"
 _MANIFEST = {

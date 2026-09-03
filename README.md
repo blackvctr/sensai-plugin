@@ -21,9 +21,8 @@ Russian:
 
 English:
 
-```text
+```
 Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
-Before doing anything, briefly reply in English that you will handle the installation. Do not ask me to do anything. Then continue the installation.
 ```
 
 ## Installation after explicit request (AI agent part)
@@ -68,12 +67,6 @@ When the person used the Russian public installation request, write exactly two 
 Я сам установлю Sensai. Сейчас откроется обычное окно Google: выберите свой аккаунт и подтвердите доступ, чтобы Sensai мог продолжать этот рабочий разговор в следующих чатах.
 ```
 
-**Second visible message — after Sensai is connected and after attempting to open the new-chat link below:**
-
-```text
-Sensai установлен. Я попытался открыть новый разговор с подготовленным сообщением. Если он появился, нажмите Enter.
-```
-
 ```bash
 claude plugin marketplace add blackvctr/sensai-plugin
 claude plugin install sensai@sensai --scope user
@@ -107,6 +100,12 @@ Then open a new Claude Code session with the ordinary request matching the perso
 - English: [Consult Sensai. First ask me about my work, usual apps, and recurring tasks.](claude://code/new?q=Consult%20Sensai.%20First%20ask%20me%20about%20my%20work%2C%20usual%20apps%2C%20and%20recurring%20tasks.)
 
 Each link only fills a new-chat composer; it does not send the request. After attempting the link, use the second exact Russian message above for a successful Russian installation. For other languages, give one complete localized sentence saying that Sensai is installed and a new chat has been opened, and that the person only needs to press Enter there if the prepared message has not been sent on its own.
+
+**Second visible message — after Sensai is connected and after attempting to open the new-chat link above:**
+
+```text
+Sensai установлен. Я попытался открыть новый разговор с подготовленным сообщением. Если он появился, нажмите Enter.
+```
 
 If the link does not open a new session, tell the person instead to open a new chat and send the matching ordinary request above.
 

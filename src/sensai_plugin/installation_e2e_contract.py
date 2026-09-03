@@ -14,7 +14,9 @@ from pathlib import Path
 from unicodedata import category, name
 from urllib.parse import parse_qsl, urlsplit
 
-REQUIRED_CLAUDE_MODEL = "claude-sonnet-5"
+# This is the one model identifier used by every Claude compatibility check.
+# Keep the value here because this module owns the observed installation contract.
+CLAUDE_SONNET_5_MODEL = "claude-sonnet-5"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 README_PATH = REPOSITORY_ROOT / "README.md"
 
@@ -121,7 +123,7 @@ def evaluate_installation_transcript(
     public_contract = _load_public_readme_contract()
     if transcript.public_prompt != public_contract.russian_install_prompt:
         failures.append("public_prompt_not_exact")
-    if transcript.model != REQUIRED_CLAUDE_MODEL:
+    if transcript.model != CLAUDE_SONNET_5_MODEL:
         failures.append("wrong_claude_model")
 
     expected_event_types = (
@@ -243,7 +245,7 @@ def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
         canonical_messages,
         (
             "**Second visible message — after Sensai is connected and after "
-            "attempting to open the new-chat link below:**"
+            "attempting to open the new-chat link above:**"
         ),
     )
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 from sensai_plugin.installation_e2e_contract import (
+    CLAUDE_SONNET_5_MODEL,
     README_PATH,
-    REQUIRED_CLAUDE_MODEL,
     ClaudeNewChatUriAttempt,
     ClaudeVisibleMessage,
     GoogleLoginCompleted,
@@ -25,7 +25,7 @@ def _valid_transcript() -> InstallationTranscript:
     contract = _public_contract()
     return InstallationTranscript(
         public_prompt=contract.russian_install_prompt,
-        model=REQUIRED_CLAUDE_MODEL,
+        model=CLAUDE_SONNET_5_MODEL,
         events=(
             ClaudeVisibleMessage(
                 text=contract.russian_authorization_message,

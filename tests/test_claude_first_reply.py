@@ -15,6 +15,7 @@ from sensai_plugin.claude_first_reply import (
     FirstReplyScenario,
     run_real_claude_first_reply,
 )
+from sensai_plugin.installation_e2e_contract import CLAUDE_SONNET_5_MODEL
 
 
 def _fake_claude(
@@ -33,7 +34,7 @@ import sys
 import time
 
 arguments = sys.argv[1:]
-if arguments[arguments.index("--model") + 1] != "sonnet":
+if arguments[arguments.index("--model") + 1] != __EXPECTED_MODEL__:
     raise SystemExit(20)
 if "--verbose" not in arguments or "--include-partial-messages" not in arguments:
     raise SystemExit(21)
@@ -121,6 +122,7 @@ if __MODE__ not in {
         .replace("__MODE__", repr(mode))
         .replace("__FIRST_REPLY__", repr(first_reply))
         .replace("__SECOND_REPLY__", repr(second_reply))
+        .replace("__EXPECTED_MODEL__", repr(CLAUDE_SONNET_5_MODEL))
         .replace(
             "__EXPECTED_PROMPT__",
             repr(_SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP]),
@@ -416,21 +418,25 @@ def test_timeout_is_safe_and_cleans_temporary_hooks(
     assert result.timed_out
 
 
-def test_all_hard_coded_scenarios_remain_natural_russian_install_requests() -> None:
+def test_all_hard_coded_scenarios_remain_the_exact_public_install_request() -> None:
     assert _SCENARIO_PROMPTS == {
         FirstReplyScenario.URL_BOOTSTRAP: (
             "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
-            "sensai-plugin/main/README.md\n"
-            "Перед любым действием сначала коротко ответь по-русски, что установкой "
-            "займёшься ты. Всё сделай сам, без моих действий. Затем продолжай установку."
+            "sensai-plugin/main/README.md"
         )
     }
 
 
-def test_invalid_hard_coded_scenario_input_fails_before_claude_runs(
+def test_stale_two_line_scenario_input_fails_before_claude_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setitem(_SCENARIO_PROMPTS, FirstReplyScenario.URL_BOOTSTRAP, "Install Sensai")
+    monkeypatch.setitem(
+        _SCENARIO_PROMPTS,
+        FirstReplyScenario.URL_BOOTSTRAP,
+        "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
+        "sensai-plugin/main/README.md\n"
+        "Перед любым действием сначала коротко ответь по-русски, что установкой займёшься ты.",
+    )
 
-    with pytest.raises(ClaudeFirstReplyError, match="natural Russian"):
+    with pytest.raises(ClaudeFirstReplyError, match="canonical README prompt"):
         run_real_claude_first_reply(scenario=FirstReplyScenario.URL_BOOTSTRAP)

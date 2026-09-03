@@ -135,37 +135,54 @@ def test_readme_conditions_russian_replies_on_the_person_using_russian() -> None
     assert ". They wrote in Russian, you answer in Russian." not in normalized
 
 
-def test_readme_requires_russian_first_install_reply_before_general_steps() -> None:
+def test_readme_documents_the_two_exact_russian_claude_messages_in_order() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-    installation_start = "## Installation after explicit request (AI agent part)"
-    pre_general_steps = _read_section(readme, installation_start, "### General steps")
-    normalized = " ".join(pre_general_steps.split())
+    claude_section = _read_section(readme, "### Claude Desktop", "#### Known problems")
+    first_marker = "**First visible message — before any action and Google sign-in:**"
+    second_marker = (
+        "**Second visible message — after Sensai is connected and after "
+        "attempting to open the new-chat link above:**"
+    )
+    first_message = (
+        "Я сам установлю Sensai. Сейчас откроется обычное окно Google: выберите свой "
+        "аккаунт и подтвердите доступ, чтобы Sensai мог продолжать этот рабочий разговор "
+        "в следующих чатах."
+    )
+    second_message = (
+        "Sensai установлен. Я попытался открыть новый разговор с подготовленным сообщением. "  # noqa: RUF001 - exact published Russian message
+        "Если он появился, нажмите Enter."
+    )
 
-    first_reply = normalized.index("first visible reply")
-    tool_call = normalized.index("calling any tool")
-    assert tool_call < first_reply
-    assert "if they write `Установи Sensai ...`, reply in Russian" in normalized
-    assert "install Sensai yourself" in normalized
-    assert "do not ask them to use a terminal" in normalized
+    # These literals deliberately do not use the README parser.  A parser and
+    # its fixture could otherwise drift together while the published promises
+    # change or move to the wrong stage of the installation.
+    assert "Before calling any tool or taking an installation step" in readme
+    assert "use exactly the two Russian messages" in readme
+    assert "in the stated order" in readme
+    assert claude_section.index(first_marker) < claude_section.index(second_marker)
+    assert f"{first_marker}\n\n```text\n{first_message}\n```" in claude_section
+    assert f"{second_marker}\n\n```text\n{second_message}\n```" in claude_section
+
+    first_message_index = claude_section.index(first_message)
+    login_index = claude_section.index("claude mcp login plugin:sensai:sensai")
+    new_chat_index = claude_section.index("Then open a new Claude Code session")
+    second_message_index = claude_section.index(second_message)
+    assert first_message_index < login_index < new_chat_index < second_message_index
 
 
-def test_public_copy_paste_prompts_make_the_first_reply_safe_and_match_the_harness() -> None:
+def test_public_copy_paste_prompts_remain_one_line_and_russian_matches_the_harness() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
     russian_prompt = (
         "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
-        "sensai-plugin/main/README.md\n"
-        "Перед любым действием сначала коротко ответь по-русски, что установкой "
-        "займёшься ты. Всё сделай сам, без моих действий. Затем продолжай установку."
+        "sensai-plugin/main/README.md"
     )
     english_prompt = (
         "Install Sensai https://raw.githubusercontent.com/blackvctr/"
-        "sensai-plugin/main/README.md\n"
-        "Before doing anything, briefly reply in English that you will handle the installation. "
-        "Do not ask me to do anything. Then continue the installation."
+        "sensai-plugin/main/README.md"
     )
 
     assert f"```text\n{russian_prompt}\n```" in readme
-    assert f"```text\n{english_prompt}\n```" in readme
+    assert f"```\n{english_prompt}\n```" in readme
     assert _SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP] == russian_prompt
 
 

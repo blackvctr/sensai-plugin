@@ -61,7 +61,8 @@ locations to the future Claude process:
 - `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_DATA_HOME`
 - `TMPDIR`, `TMP`, and `TEMP`
 
-The run selects `claude-sonnet-5`. It includes an empty private `work`
+Compatibility E2E fixes `claude-sonnet-5`; the public README's Opus
+recommendation remains for normal human installation. The run includes an empty private `work`
 directory. Every future Claude subprocess must use that exact directory as its
 current working directory; it must not run from this repository or from the
 persistent profile. The run starts with no plugin, MCP, Sensai, cache, or prior
