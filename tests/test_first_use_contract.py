@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote
 
 from sensai_plugin.claude_first_reply import (
     _SCENARIO_PROMPTS,
@@ -220,7 +221,67 @@ def test_readme_uses_a_waited_hidden_powershell_claude_login() -> None:
         "& $claude mcp get plugin:sensai:sensai"
     )
     assert "The person only chooses their Google account in the browser." in login_path
-    assert "Start-Process 'claude://code/new?q=%2Fsensai%3Asensai'" in claude_path
+
+
+def test_claude_launch_links_start_a_localized_ordinary_consultation() -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    claude_path = _read_section(readme, "### Claude Desktop", "#### Known problems")
+    launch_path = _read_section(
+        claude_path,
+        "Then open a new Claude Code session with the ordinary request",
+        "#### Known problems",
+    )
+    russian_request = (
+        "Проконсультируйся с Sensai. Сначала задай мне вопросы о моей работе, "  # noqa: RUF001 - exact public Russian launch text
+        "обычных программах и повторяющихся задачах."
+    )
+    english_request = "Consult Sensai. First ask me about my work, usual apps, and recurring tasks."
+
+    encoded_requests = [
+        encoded
+        for encoded in launch_path.split("(claude://code/new?q=")[1:]
+        for encoded in [encoded.split(")", maxsplit=1)[0]]
+    ]
+    decoded_requests = {unquote(encoded) for encoded in encoded_requests}
+
+    assert russian_request in decoded_requests
+    assert english_request in decoded_requests
+    assert all(request.strip() and not request.startswith("/") for request in decoded_requests)
+    assert "/sensai:sensai" not in launch_path
+    assert russian_request in launch_path
+    assert english_request in launch_path
+
+
+def test_sensai_skill_description_covers_a_person_starting_consultation() -> None:
+    for skill in (SOURCE_SKILL, PACKAGED_SKILL):
+        text = skill.read_text(encoding="utf-8")
+        frontmatter = text.split("---", maxsplit=2)[1]
+        assert "person asks to start a Sensai consultation" in frontmatter
+        assert (
+            "call `tell_sensai` once with exactly: `The person wants to explore ways AI "
+            "can improve their work.`" in text
+        )
+        assert "Keep the person's launch phrase in the host conversation" in text
+        assert (
+            "This start-only launch is not an actual work request and does not cause an "
+            "automatic second `tell_sensai` call." in text
+        )
+        assert "Await the person's role, usual apps or sites, and recurring work" in text
+        assert (
+            "then make exactly one follow-up with only the person's stated facts and any "
+            "stated work request." in text
+        )
+
+
+def test_first_contact_limits_the_general_follow_up_to_non_start_only_launches() -> None:
+    first_contact = (REPOSITORY_ROOT / "docs/specs/FIRST-CONTACT-001.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Outside the start-only case, when the first MCP result is Sensai's exact fixed "
+        "onboarding reply" in first_contact
+    )
 
 
 def test_built_payloads_keep_the_concise_post_install_consultation_contract(

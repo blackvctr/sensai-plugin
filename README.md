@@ -86,20 +86,14 @@ if ($login.ExitCode -ne 0) { throw 'Sensai sign-in did not complete.' }
 
 The PowerShell block temporarily prepends the Windows user's `Path`, then finds the Windows `claude.exe` program before starting anything. This matters when PowerShell was launched from WSL, whose copied environment can omit the Windows user path and ordinary executable-extension lookup; it does not change the saved Windows environment. The block starts that exact program through `cmd.exe`, which gives the login command a terminal, keeps the window hidden, and waits for it to finish. The final `mcp get` runs through the same Windows program and user profile. Before sign-in it reports `Status: ! Needs authentication`; after a successful sign-in that line changes. Treat the changed status as the signal to continue, not the login command's exit alone. The person only chooses their Google account in the browser. A real later sign-in and its changed `mcp get` status are still required to prove this Windows path works.
 
-Then open the new session yourself, again using the line for the shell you are running in:
+Then open a new Claude Code session with the ordinary request matching the person's language:
 
-```bash
-start "" "claude://code/new?q=%2Fsensai%3Asensai"         # Windows, CMD
-Start-Process 'claude://code/new?q=%2Fsensai%3Asensai'    # Windows, PowerShell
-open "claude://code/new?q=%2Fsensai%3Asensai"             # macOS
-xdg-open "claude://code/new?q=%2Fsensai%3Asensai"         # Linux
-```
+- Russian: [Проконсультируйся с Sensai. Сначала задай мне вопросы о моей работе, обычных программах и повторяющихся задачах.](claude://code/new?q=%D0%9F%D1%80%D0%BE%D0%BA%D0%BE%D0%BD%D1%81%D1%83%D0%BB%D1%8C%D1%82%D0%B8%D1%80%D1%83%D0%B9%D1%81%D1%8F%20%D1%81%20Sensai.%20%D0%A1%D0%BD%D0%B0%D1%87%D0%B0%D0%BB%D0%B0%20%D0%B7%D0%B0%D0%B4%D0%B0%D0%B9%20%D0%BC%D0%BD%D0%B5%20%D0%B2%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D1%8B%20%D0%BE%20%D0%BC%D0%BE%D0%B5%D0%B9%20%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B5%2C%20%D0%BE%D0%B1%D1%8B%D1%87%D0%BD%D1%8B%D1%85%20%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B0%D1%85%20%D0%B8%20%D0%BF%D0%BE%D0%B2%D1%82%D0%BE%D1%80%D1%8F%D1%8E%D1%89%D0%B8%D1%85%D1%81%D1%8F%20%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%D1%85.)
+- English: [Consult Sensai. First ask me about my work, usual apps, and recurring tasks.](claude://code/new?q=Consult%20Sensai.%20First%20ask%20me%20about%20my%20work%2C%20usual%20apps%2C%20and%20recurring%20tasks.)
 
-A new Claude Code session opens with `/sensai:sensai` already in its composer.
+Each link only fills a new-chat composer; it does not send the request. Then tell the person, in one complete localized sentence, that Sensai is installed and has just opened in a new chat, and that they only need to press Enter there if the prepared message has not been sent on its own.
 
-Then tell the person, in one complete localized sentence, that Sensai is installed and has just opened in a new chat, and that they only need to press Enter there if the prepared message has not been sent on its own.
-
-If the command fails, or no new session appears, tell the person instead to open a new chat and send `/sensai:sensai` there.
+If the link does not open a new session, tell the person instead to open a new chat and send the matching ordinary request above.
 
 #### Known problems
 

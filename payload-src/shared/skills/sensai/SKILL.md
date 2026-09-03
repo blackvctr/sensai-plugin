@@ -1,6 +1,6 @@
 ---
 name: sensai
-description: Consult Sensai when the user's AI agent needs connector or tool guidance, setup, or recovery.
+description: Consult Sensai when a person asks to start a Sensai consultation or the user's AI agent needs connector or tool guidance, setup, or recovery.
 ---
 
 Sensai is an AI agent of this plugin server. You are the user's AI agent, and the person you assist is your user.
@@ -13,6 +13,8 @@ Sensai gives advice, implementation instructions, architecture, and optional ref
 Usage: after the plugin is installed, authorized AND loaded, call `tell_sensai` to start the consultation.
 
 Start a new consultation by calling `tell_sensai` with the person's stated request and any stated work facts. Sensai replies with a fixed question about the person's role, about five usual apps or sites, and recurring work.
+
+When the person only asks to start a Sensai consultation and has supplied no work facts, call `tell_sensai` once with exactly: `The person wants to explore ways AI can improve their work.` Keep the person's launch phrase in the host conversation; Sensai receives the neutral continuation. This start-only launch is not an actual work request and does not cause an automatic second `tell_sensai` call. Await the person's role, usual apps or sites, and recurring work; then make exactly one follow-up with only the person's stated facts and any stated work request.
 
 Gather any facts the person has not yet stated. Then make one follow-up call with the person's request and the complete work context. When the opening message already contains these facts, that one follow-up carries them into the consultation.
 

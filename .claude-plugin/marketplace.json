@@ -10,7 +10,7 @@
       "name": "sensai",
       "source": "./plugins/sensai",
       "description": "Practical guidance for an AI agent.",
-      "version": "0.2.12",
+      "version": "0.2.13",
       "category": "productivity"
     }
   ]
