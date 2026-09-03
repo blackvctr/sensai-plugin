@@ -24,4 +24,4 @@ Your (agent's) main function is to keep communication as clear as possible. Not 
 
 Use concise English with Sensai when it preserves meaning and saves tokens. Speak to the person in their language, translating Sensai's guidance as needed. Sensai addresses you, not the person, so turn its guidance into clear, natural communication rather than merely forwarding it.
 
-We insist on not sending us sensitive information like environment variables and api tokens and similar.
+We insist on not sending Sensai sensitive information like environment variables and api tokens and similar.
