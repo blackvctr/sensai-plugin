@@ -58,6 +58,7 @@ FORGET_ME_TIMEOUT_SECONDS = 60
 PROCESS_TERMINATION_GRACE_SECONDS = 3
 MAX_STREAM_LINE_BYTES = 256 * 1024
 MAX_STREAM_EVENTS = 128
+MAX_STREAM_BYTES = 2 * 1024 * 1024
 MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
@@ -178,6 +179,7 @@ class AgentEvidence:
     tool_calls: tuple[ToolKind, ...]
     successful_tool_results: tuple[ToolKind, ...]
     tool_results: tuple[ToolResultEvidence, ...]
+    event_order: tuple[str, ...]
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -320,7 +322,8 @@ class SubprocessClaudeDriver:
             return False
         return (
             "plugin:sensai:sensai" in status
-            and "Status:" in status
+            and "Type:" in status
+            and "URL:" in status
             and _STATUS_FAILURE.search(status) is None
         )
 
@@ -385,9 +388,13 @@ def _direct_tool_kind(block: object) -> ToolKind | None:
     if not isinstance(block, dict):
         return None
     name = block.get("name")
-    if isinstance(name, str) and name.endswith("forget_me"):
+    if not isinstance(name, str) or not name.startswith(
+        ("mcp__sensai__", "mcp__plugin_sensai__")
+    ):
+        return None
+    if name in {"mcp__sensai__forget_me", "mcp__plugin_sensai__forget_me"}:
         return ToolKind.FORGET_ME
-    if isinstance(name, str) and name.endswith("tell_sensai"):
+    if name in {"mcp__sensai__tell_sensai", "mcp__plugin_sensai__tell_sensai"}:
         return ToolKind.TELL_SENSAI
     return None
 
@@ -437,9 +444,26 @@ def _new_tool_accumulator(block: object) -> _ToolAccumulator:
 
 def _telegram_body() -> str | None:
     try:
-        return _TELEGRAM_BODY_PATH.read_text(encoding="utf-8")
-    except OSError:
+        body = _TELEGRAM_BODY_PATH.read_text(encoding="utf-8")
+        manifest = json.loads(
+            (_TELEGRAM_BODY_PATH.parents[2] / "deploy" / "knowledge-base-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+    entries = manifest.get("entries") if isinstance(manifest, dict) else None
+    if not isinstance(entries, list):
+        return None
+    expected = next(
+        (
+            item.get("body_sha256")
+            for item in entries
+            if isinstance(item, dict) and item.get("id") == "telegram" and item.get("path") == "connectors/telegram.md"
+        ),
+        None,
+    )
+    return body if expected == hashlib.sha256(body.encode("utf-8")).hexdigest() else None
 
 
 def _sensai_reply_kind(content: object) -> SensaiReplyKind:
@@ -522,14 +546,20 @@ def _consume_stream(
     tool_blocks: dict[int, _ToolAccumulator] = {}
     text_messages: list[TextEvidence] = []
     calls: list[ToolKind] = []
+    event_order: list[str] = []
     results: list[ToolResultEvidence] = []
     outstanding: dict[bytes, ToolKind] = {}
     result_seen = session_verified = malformed = timed_out = False
     event_count = 0
+    stream_bytes = 0
     deadline = time.monotonic() + timeout_seconds
 
     def consume(line: bytes) -> None:
-        nonlocal event_count, malformed, result_seen, session_verified
+        nonlocal event_count, malformed, result_seen, session_verified, stream_bytes
+        stream_bytes += len(line)
+        if stream_bytes > MAX_STREAM_BYTES:
+            malformed = True
+            return
         if len(line) > MAX_STREAM_LINE_BYTES:
             malformed = True
             return
@@ -600,6 +630,7 @@ def _consume_stream(
                         latin_letters=accumulator.latin_letters,
                     )
                 )
+                event_order.append("visible")
             tool_accumulator = tool_blocks.pop(index, None) if isinstance(index, int) else None
             if tool_accumulator is not None:
                 kind = tool_accumulator.direct_kind
@@ -616,6 +647,7 @@ def _consume_stream(
                             else ToolKind.OTHER
                         )
                 calls.append(kind)
+                event_order.append(kind.value)
                 if tool_accumulator.result_key is not None:
                     outstanding[tool_accumulator.result_key] = kind
 
@@ -652,6 +684,8 @@ def _consume_stream(
         selector.close()
         if process.poll() is None:
             _terminate(process)
+    if text_blocks or tool_blocks:
+        malformed = True
     return AgentEvidence(
         result_seen=result_seen,
         session_verified=session_verified,
@@ -662,6 +696,7 @@ def _consume_stream(
         tool_calls=tuple(calls),
         successful_tool_results=tuple(result.kind for result in results if result.succeeded),
         tool_results=tuple(results),
+        event_order=tuple(event_order),
     )
 
 
@@ -880,11 +915,23 @@ class ProductionSensaiE2E:
             message.cyrillic_letters <= message.latin_letters for message in evidence.text_messages
         ):
             raise ProductionE2EError("installation_visible_message_not_russian")
-        for required in (ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL, ToolKind.NEW_CHAT_URI):
-            if evidence.tool_calls.count(required) != 1:
+        for required in (ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL):
+            if not evidence.has_successful(required):
                 raise ProductionE2EError(f"installation_{required}_not_observed")
+        if evidence.tool_calls.count(ToolKind.NEW_CHAT_URI) != 1:
+            raise ProductionE2EError("installation_new_chat_uri_not_observed")
         if ToolKind.FORBIDDEN_BROWSER_MODE in evidence.tool_calls:
             raise ProductionE2EError("installation_no_browser_forbidden")
+        expected = (
+            "visible",
+            ToolKind.MARKETPLACE_ADD.value,
+            ToolKind.PLUGIN_INSTALL.value,
+            ToolKind.LOGIN.value,
+            ToolKind.NEW_CHAT_URI.value,
+            "visible",
+        )
+        if evidence.event_order != expected:
+            raise ProductionE2EError("installation_event_order_invalid")
 
     @staticmethod
     def _require_tool_turn(

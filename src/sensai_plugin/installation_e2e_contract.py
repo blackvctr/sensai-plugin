@@ -120,9 +120,11 @@ def evaluate_installation_transcript(
 
     1. the exact authorization message before the normal Sensai login;
     2. one normal Sensai login command start and completion;
-    3. a successful Sensai connection observation;
-    4. one ``claude://code/new`` URI whose request exactly matches README; and
-    5. the exact ready message after that attempt.
+    3. one ``claude://code/new`` URI whose request exactly matches README;
+    4. the exact ready message after that attempt; and
+    5. a later safe endpoint-configuration observation.  The completed normal
+       login and the first successful ``tell_sensai`` call prove service use;
+       this later status check does not pretend to have happened before URI.
 
     The URI event proves only that Claude asked the local system to open the
     published link. It deliberately does not claim that Claude Desktop made a
@@ -140,9 +142,9 @@ def evaluate_installation_transcript(
         ClaudeVisibleMessage,
         SensaiLoginStarted,
         SensaiLoginCompleted,
-        SensaiConnectionObserved,
         ClaudeNewChatUriAttempt,
         ClaudeVisibleMessage,
+        SensaiConnectionObserved,
     )
     actual_event_types = tuple(type(event) for event in transcript.events)
     if actual_event_types != expected_event_types:
@@ -154,7 +156,7 @@ def evaluate_installation_transcript(
         )
         return InstallationTranscriptReport(tuple(failures))
 
-    authorization, _, _, connection, chat_uri, ready = transcript.events
+    authorization, _, _, chat_uri, ready, connection = transcript.events
     assert isinstance(authorization, ClaudeVisibleMessage)
     assert isinstance(connection, SensaiConnectionObserved)
     assert isinstance(ready, ClaudeVisibleMessage)

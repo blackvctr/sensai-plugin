@@ -32,11 +32,11 @@ def _valid_transcript() -> InstallationTranscript:
             ),
             SensaiLoginStarted(),
             SensaiLoginCompleted(),
-            SensaiConnectionObserved(connected=True),
             ClaudeNewChatUriAttempt(
                 uri="claude://code/new?" + urlencode({"q": contract.russian_new_chat_request}),
             ),
             ClaudeVisibleMessage(text=contract.russian_ready_message),
+            SensaiConnectionObserved(connected=True),
         ),
     )
 
@@ -180,7 +180,7 @@ def test_rejects_missing_or_unsuccessful_sensai_connection() -> None:
 def test_rejects_a_different_russian_new_chat_request() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events[-2] = ClaudeNewChatUriAttempt(
+    events[3] = ClaudeNewChatUriAttempt(
         uri="claude://code/new?"
         + urlencode(
             {"q": "Открой новый разговор с Sensai."}  # noqa: RUF001 - alternate Russian request
@@ -204,7 +204,7 @@ def test_rejects_invisible_leading_or_trailing_whitespace_in_new_chat_request() 
 
     for changed_request in (f" {request}", f"{request} "):
         events = list(transcript.events)
-        events[-2] = ClaudeNewChatUriAttempt(
+        events[3] = ClaudeNewChatUriAttempt(
             uri="claude://code/new?" + urlencode({"q": changed_request}),
         )
         report = evaluate_installation_transcript(
@@ -221,7 +221,7 @@ def test_rejects_invisible_leading_or_trailing_whitespace_in_new_chat_request() 
 def test_rejects_a_malformed_claude_new_chat_uri_without_crashing() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events[-2] = ClaudeNewChatUriAttempt(uri="claude://code/new?q")
+    events[3] = ClaudeNewChatUriAttempt(uri="claude://code/new?q")
 
     report = evaluate_installation_transcript(
         InstallationTranscript(
@@ -269,7 +269,7 @@ def test_rejects_the_old_order_that_announced_readiness_before_uri_attempt() -> 
 def test_rejects_an_altered_ready_message() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events[-1] = ClaudeVisibleMessage(text="Готово.")
+    events[4] = ClaudeVisibleMessage(text="Готово.")
 
     report = evaluate_installation_transcript(
         InstallationTranscript(
