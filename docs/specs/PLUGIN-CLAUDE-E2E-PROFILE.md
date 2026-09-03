@@ -15,14 +15,17 @@ not copy Claude settings, conversation history, plugins, marketplace state,
 browser data, or MCP/Sensai authorization.
 
 The target profile must be outside the development directory, separate from the
-chosen source Claude profile, and must not already exist. Use a Linux home path
-such as `~/.local/share/sensai-claude-e2e`; Windows-mounted paths such as
-`/mnt/c/...` are rejected when their observed permissions are not exactly 0700
-for directories and 0600 for private files. Provisioning therefore cannot
-overwrite either an existing test profile or a working Claude profile. Its
-directory is private to the local user; the credential and manifest files are
-readable only by that user. A profile-local lock prevents two provision or test
-operations from sharing its state.
+chosen source Claude profile, and must not already exist. The only accepted
+location is under the local Linux home share directory, for example
+`~/.local/share/sensai-claude-e2e`; Windows-mounted paths such as `/mnt/c/...`
+are not accepted. Provisioning checks that every private directory actually has
+mode 0700 and every private file actually has mode 0600. It therefore never
+claims protection merely because it requested a permission change.
+
+Provisioning cannot overwrite either an existing test profile or a working
+Claude profile. Its directory is private to the local user; the credential and
+manifest files are readable only by that user. A profile-local lock prevents two
+provision or test operations from sharing its state.
 
 The command is explicit. `--dry-run` validates the requested source and target
 without creating any file. `--detect-source` means exactly the credential file
