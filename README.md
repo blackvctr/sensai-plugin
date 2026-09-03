@@ -28,7 +28,7 @@ Before doing anything, briefly reply in English that you will handle the install
 
 ## Installation after explicit request (AI agent part)
 
-Before calling any tool or taking an installation step, make your first visible reply in the language of the person's request. For example, if they write `Установи Sensai ...`, reply in Russian, say that you will install Sensai yourself, and do not ask them to use a terminal or begin with an English command.
+Before calling any tool or taking an installation step, make your first visible reply in the language of the person's request. For a successful Russian Claude Desktop installation, use exactly the two Russian messages in the Claude Desktop section, in the stated order.
 
 Here and below, make every step convenient for the person. English may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening in plain language and adapt your terminology to their level. Treat the person's time as especially valuable: don't ask them to perform manually actions you can do yourself, though you can inform the person if it makes sense. Avoid technical terms and unnecessary interface clicks. Leave the person only actions that need their own account choice or approval. Nothing in this process should require them to know what `PATH` is.
 
@@ -57,6 +57,22 @@ The Sensai plugin is installed. To start using it, open a [new chat](codex://new
 For another language, translate both the visible sentence and `Run` inside the link before URL-encoding the prompt. Keep `[@sensai](plugin://sensai@sensai)` unchanged. The link only fills the new-chat composer; it does not send the message.
 
 ### Claude Desktop
+
+#### Exact Russian messages for a successful Claude installation
+
+When the person used the Russian public installation request, write exactly two visible messages during a successful installation. Do not add a third message to the person.
+
+**First visible message — before any action and Google sign-in:**
+
+```text
+Я сам установлю Sensai. Сейчас откроется обычное окно Google: выберите свой аккаунт и подтвердите доступ, чтобы Sensai мог продолжать этот рабочий разговор в следующих чатах.
+```
+
+**Second visible message — after Sensai is connected and after attempting to open the new-chat link below:**
+
+```text
+Sensai установлен. Я попытался открыть новый разговор с подготовленным сообщением. Если он появился, нажмите Enter.
+```
 
 ```bash
 claude plugin marketplace add blackvctr/sensai-plugin
@@ -90,7 +106,7 @@ Then open a new Claude Code session with the ordinary request matching the perso
 - Russian: [Проконсультируйся с Sensai. Сначала задай мне вопросы о моей работе, обычных программах и повторяющихся задачах.](claude://code/new?q=%D0%9F%D1%80%D0%BE%D0%BA%D0%BE%D0%BD%D1%81%D1%83%D0%BB%D1%8C%D1%82%D0%B8%D1%80%D1%83%D0%B9%D1%81%D1%8F%20%D1%81%20Sensai.%20%D0%A1%D0%BD%D0%B0%D1%87%D0%B0%D0%BB%D0%B0%20%D0%B7%D0%B0%D0%B4%D0%B0%D0%B9%20%D0%BC%D0%BD%D0%B5%20%D0%B2%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D1%8B%20%D0%BE%20%D0%BC%D0%BE%D0%B5%D0%B9%20%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B5%2C%20%D0%BE%D0%B1%D1%8B%D1%87%D0%BD%D1%8B%D1%85%20%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B0%D1%85%20%D0%B8%20%D0%BF%D0%BE%D0%B2%D1%82%D0%BE%D1%80%D1%8F%D1%8E%D1%89%D0%B8%D1%85%D1%81%D1%8F%20%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%D1%85.)
 - English: [Consult Sensai. First ask me about my work, usual apps, and recurring tasks.](claude://code/new?q=Consult%20Sensai.%20First%20ask%20me%20about%20my%20work%2C%20usual%20apps%2C%20and%20recurring%20tasks.)
 
-Each link only fills a new-chat composer; it does not send the request. Then tell the person, in one complete localized sentence, that Sensai is installed and has just opened in a new chat, and that they only need to press Enter there if the prepared message has not been sent on its own.
+Each link only fills a new-chat composer; it does not send the request. After attempting the link, use the second exact Russian message above for a successful Russian installation. For other languages, give one complete localized sentence saying that Sensai is installed and a new chat has been opened, and that the person only needs to press Enter there if the prepared message has not been sent on its own.
 
 If the link does not open a new session, tell the person instead to open a new chat and send the matching ordinary request above.
 

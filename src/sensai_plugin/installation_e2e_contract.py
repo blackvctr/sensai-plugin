@@ -21,10 +21,12 @@ README_PATH = REPOSITORY_ROOT / "README.md"
 
 @dataclass(frozen=True, slots=True)
 class PublicReadmeContract:
-    """The two executable Russian values published in the current README."""
+    """Russian installation values that the public README makes exact."""
 
     russian_install_prompt: str
+    russian_authorization_message: str
     russian_new_chat_request: str
+    russian_ready_message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,18 +106,15 @@ def evaluate_installation_transcript(
 
     The decisive event sequence is intentionally short and closed:
 
-    1. one user-directed message before Google consent;
+    1. the exact authorization message before any Google consent;
     2. one real Google login start and completion;
     3. a successful Sensai connection observation;
-    4. one user-directed ready message; and
-    5. one ``claude://code/new`` URI whose request exactly matches README.
+    4. one ``claude://code/new`` URI whose request exactly matches README; and
+    5. the exact ready message after that attempt.
 
-    Current README gives the purposes of the two messages but not their exact
-    Russian text.  Unicode letters can prove that a message is predominantly
-    Russian; they cannot prove that arbitrary Russian prose avoids manual
-    terminal/software instructions.  Until README publishes both canonical
-    messages, this evaluator deliberately reports that missing contract rather
-    than claiming content safety from a word search.
+    The URI event proves only that Claude asked the local system to open the
+    published link. It deliberately does not claim that Claude Desktop made a
+    new window visible.
     """
 
     failures: list[str] = []
@@ -130,8 +129,8 @@ def evaluate_installation_transcript(
         GoogleLoginStarted,
         GoogleLoginCompleted,
         SensaiConnectionObserved,
-        ClaudeVisibleMessage,
         ClaudeNewChatUriAttempt,
+        ClaudeVisibleMessage,
     )
     actual_event_types = tuple(type(event) for event in transcript.events)
     if actual_event_types != expected_event_types:
@@ -143,12 +142,16 @@ def evaluate_installation_transcript(
         )
         return InstallationTranscriptReport(tuple(failures))
 
-    authorization, _, _, connection, ready, chat_uri = transcript.events
+    authorization, _, _, connection, chat_uri, ready = transcript.events
     assert isinstance(authorization, ClaudeVisibleMessage)
     assert isinstance(connection, SensaiConnectionObserved)
     assert isinstance(ready, ClaudeVisibleMessage)
     assert isinstance(chat_uri, ClaudeNewChatUriAttempt)
 
+    if authorization.text != public_contract.russian_authorization_message:
+        failures.append("authorization_message_not_exact")
+    if ready.text != public_contract.russian_ready_message:
+        failures.append("ready_message_not_exact")
     for message in (authorization, ready):
         if not _is_predominantly_cyrillic(message.text):
             failures.append("visible_message_not_russian")
@@ -156,8 +159,6 @@ def evaluate_installation_transcript(
         failures.append("sensai_connection_not_verified")
     if not _is_valid_new_chat_uri(chat_uri.uri, public_contract.russian_new_chat_request):
         failures.append("wrong_new_chat_uri")
-    failures.append("readme_canonical_visible_messages_missing")
-
     return InstallationTranscriptReport(tuple(failures))
 
 
@@ -230,9 +231,27 @@ def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
     if uri_request is None or visible_request != uri_request:
         raise ValueError("README Russian Claude new-chat link does not encode its visible request")
 
+    canonical_messages = _markdown_subsubsection(
+        claude_desktop,
+        "#### Exact Russian messages for a successful Claude installation",
+    )
+    authorization_message = _marked_text_block(
+        canonical_messages,
+        "**First visible message — before any action and Google sign-in:**",
+    )
+    ready_message = _marked_text_block(
+        canonical_messages,
+        (
+            "**Second visible message — after Sensai is connected and after "
+            "attempting to open the new-chat link below:**"
+        ),
+    )
+
     return PublicReadmeContract(
         russian_install_prompt=prompt_lines[0],
+        russian_authorization_message=authorization_message,
         russian_new_chat_request=uri_request,
+        russian_ready_message=ready_message,
     )
 
 
@@ -256,6 +275,39 @@ def _markdown_subsection(lines: list[str], heading: str) -> list[str]:
         len(lines),
     )
     return lines[start + 1 : end]
+
+
+def _markdown_subsubsection(lines: list[str], heading: str) -> list[str]:
+    """Return one level-four Markdown subsection, excluding later siblings."""
+
+    start = _line_index(lines, heading)
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith(("## ", "### ", "#### "))
+        ),
+        len(lines),
+    )
+    return lines[start + 1 : end]
+
+
+def _marked_text_block(lines: list[str], marker: str) -> str:
+    """Read one exact one-line text block following a readable README marker."""
+
+    marker_index = _line_index(lines, marker)
+    fence = marker_index + 1
+    while fence < len(lines) and not lines[fence].strip():
+        fence += 1
+    if fence >= len(lines) or lines[fence] != "```text":
+        raise ValueError(f"README marker has no text block: {marker}")
+    end = fence + 1
+    while end < len(lines) and lines[end] != "```":
+        end += 1
+    block_lines = lines[fence + 1 : end]
+    if end == len(lines) or len(block_lines) != 1 or not block_lines[0].strip():
+        raise ValueError(f"README marker must have one nonempty line: {marker}")
+    return block_lines[0]
 
 
 def _line_index(lines: list[str], expected: str) -> int:

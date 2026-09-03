@@ -28,17 +28,15 @@ def _valid_transcript() -> InstallationTranscript:
         model=REQUIRED_CLAUDE_MODEL,
         events=(
             ClaudeVisibleMessage(
-                text="Я установлю Sensai сам. Выберите Google-аккаунт в открывшемся окне.",
+                text=contract.russian_authorization_message,
             ),
             GoogleLoginStarted(),
             GoogleLoginCompleted(),
             SensaiConnectionObserved(connected=True),
-            ClaudeVisibleMessage(
-                text="Sensai готов. Открываю новый разговор для рабочей консультации.",
-            ),
             ClaudeNewChatUriAttempt(
                 uri="claude://code/new?" + urlencode({"q": contract.russian_new_chat_request}),
             ),
+            ClaudeVisibleMessage(text=contract.russian_ready_message),
         ),
     )
 
@@ -71,10 +69,10 @@ def test_ignores_an_unrelated_russian_link_in_the_chatgpt_desktop_section() -> N
     assert _public_contract_from_markdown(altered) == _public_contract()
 
 
-def test_structurally_complete_transcript_reports_the_current_readme_content_gap() -> None:
+def test_accepts_the_exact_public_russian_success_path() -> None:
     report = evaluate_installation_transcript(_valid_transcript())
 
-    assert report.failures == ("readme_canonical_visible_messages_missing",)
+    assert report.passed
 
 
 def test_rejects_a_stale_or_extended_public_prompt() -> None:
@@ -90,10 +88,7 @@ def test_rejects_a_stale_or_extended_public_prompt() -> None:
         )
     )
 
-    assert report.failures == (
-        "public_prompt_not_exact",
-        "readme_canonical_visible_messages_missing",
-    )
+    assert report.failures == ("public_prompt_not_exact",)
 
 
 def test_rejects_any_model_other_than_claude_sonnet_5() -> None:
@@ -106,10 +101,7 @@ def test_rejects_any_model_other_than_claude_sonnet_5() -> None:
         )
     )
 
-    assert report.failures == (
-        "wrong_claude_model",
-        "readme_canonical_visible_messages_missing",
-    )
+    assert report.failures == ("wrong_claude_model",)
 
 
 def test_rejects_english_visible_message_by_unicode_letters() -> None:
@@ -128,8 +120,8 @@ def test_rejects_english_visible_message_by_unicode_letters() -> None:
     )
 
     assert report.failures == (
+        "authorization_message_not_exact",
         "visible_message_not_russian",
-        "readme_canonical_visible_messages_missing",
     )
 
 
@@ -188,7 +180,7 @@ def test_rejects_missing_or_unsuccessful_sensai_connection() -> None:
 def test_rejects_a_different_russian_new_chat_request() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events[-1] = ClaudeNewChatUriAttempt(
+    events[-2] = ClaudeNewChatUriAttempt(
         uri="claude://code/new?"
         + urlencode(
             {"q": "Открой новый разговор с Sensai."}  # noqa: RUF001 - alternate Russian request
@@ -203,10 +195,7 @@ def test_rejects_a_different_russian_new_chat_request() -> None:
         )
     )
 
-    assert report.failures == (
-        "wrong_new_chat_uri",
-        "readme_canonical_visible_messages_missing",
-    )
+    assert report.failures == ("wrong_new_chat_uri",)
 
 
 def test_rejects_invisible_leading_or_trailing_whitespace_in_new_chat_request() -> None:
@@ -215,7 +204,7 @@ def test_rejects_invisible_leading_or_trailing_whitespace_in_new_chat_request() 
 
     for changed_request in (f" {request}", f"{request} "):
         events = list(transcript.events)
-        events[-1] = ClaudeNewChatUriAttempt(
+        events[-2] = ClaudeNewChatUriAttempt(
             uri="claude://code/new?" + urlencode({"q": changed_request}),
         )
         report = evaluate_installation_transcript(
@@ -226,16 +215,13 @@ def test_rejects_invisible_leading_or_trailing_whitespace_in_new_chat_request() 
             )
         )
 
-        assert report.failures == (
-            "wrong_new_chat_uri",
-            "readme_canonical_visible_messages_missing",
-        )
+        assert report.failures == ("wrong_new_chat_uri",)
 
 
 def test_rejects_a_malformed_claude_new_chat_uri_without_crashing() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events[-1] = ClaudeNewChatUriAttempt(uri="claude://code/new?q")
+    events[-2] = ClaudeNewChatUriAttempt(uri="claude://code/new?q")
 
     report = evaluate_installation_transcript(
         InstallationTranscript(
@@ -245,13 +231,26 @@ def test_rejects_a_malformed_claude_new_chat_uri_without_crashing() -> None:
         )
     )
 
-    assert report.failures == (
-        "wrong_new_chat_uri",
-        "readme_canonical_visible_messages_missing",
-    )
+    assert report.failures == ("wrong_new_chat_uri",)
 
 
 def test_rejects_a_new_chat_uri_before_the_verified_connection() -> None:
+    transcript = _valid_transcript()
+    events = list(transcript.events)
+    events[3], events[4] = events[4], events[3]
+
+    report = evaluate_installation_transcript(
+        InstallationTranscript(
+            public_prompt=transcript.public_prompt,
+            model=transcript.model,
+            events=tuple(events),
+        )
+    )
+
+    assert report.failures == ("unsafe_event_order",)
+
+
+def test_rejects_the_old_order_that_announced_readiness_before_uri_attempt() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
     events[-2], events[-1] = events[-1], events[-2]
@@ -265,3 +264,19 @@ def test_rejects_a_new_chat_uri_before_the_verified_connection() -> None:
     )
 
     assert report.failures == ("unsafe_event_order",)
+
+
+def test_rejects_an_altered_ready_message() -> None:
+    transcript = _valid_transcript()
+    events = list(transcript.events)
+    events[-1] = ClaudeVisibleMessage(text="Готово.")
+
+    report = evaluate_installation_transcript(
+        InstallationTranscript(
+            public_prompt=transcript.public_prompt,
+            model=transcript.model,
+            events=tuple(events),
+        )
+    )
+
+    assert report.failures == ("ready_message_not_exact",)
