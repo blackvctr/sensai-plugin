@@ -14,11 +14,15 @@ contains a Claude login. It writes only that login into its own profile. It does
 not copy Claude settings, conversation history, plugins, marketplace state,
 browser data, or MCP/Sensai authorization.
 
-The target profile must be outside this repository, separate from the chosen
-source Claude profile, and must not already exist. Provisioning therefore
-cannot overwrite either an existing test profile or a working Claude profile. Its directory is private to the local user; the
-credential and manifest files are readable only by that user. A profile-local
-lock prevents two provision or test operations from sharing its state.
+The target profile must be outside the development directory, separate from the
+chosen source Claude profile, and must not already exist. Use a Linux home path
+such as `~/.local/share/sensai-claude-e2e`; Windows-mounted paths such as
+`/mnt/c/...` are rejected when their observed permissions are not exactly 0700
+for directories and 0600 for private files. Provisioning therefore cannot
+overwrite either an existing test profile or a working Claude profile. Its
+directory is private to the local user; the credential and manifest files are
+readable only by that user. A profile-local lock prevents two provision or test
+operations from sharing its state.
 
 The command is explicit. `--dry-run` validates the requested source and target
 without creating any file. `--detect-source` means exactly the credential file
@@ -28,7 +32,7 @@ Claude profile. `--source-credentials` names a concrete alternative.
 
 ```sh
 uv run python scripts/provision_claude_e2e_profile.py \
-  --profile /a/private/place/sensai-claude-e2e \
+  --profile "$HOME/.local/share/sensai-claude-e2e" \
   --detect-source --dry-run
 ```
 
@@ -49,10 +53,12 @@ locations to the future Claude process:
 - `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_DATA_HOME`
 - `TMPDIR`, `TMP`, and `TEMP`
 
-The run selects `claude-sonnet-5`. It starts with no plugin, MCP, Sensai, cache,
-or prior conversation state. Its directory is removed after the caller exits,
-including after a failed test. The persistent baseline remains only for the
-next new run.
+The run selects `claude-sonnet-5`. It includes an empty private `work`
+directory. Every future Claude subprocess must use that exact directory as its
+current working directory; it must not run from this repository or from the
+persistent profile. The run starts with no plugin, MCP, Sensai, cache, or prior
+conversation state. Its directory is removed after the caller exits, including
+after a failed test. The persistent baseline remains only for the next new run.
 
 ## Boundaries
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shutil
 import stat
 import tempfile
@@ -25,8 +26,10 @@ except ImportError:  # pragma: no cover - the supported local runner is POSIX/WS
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+DEVELOPMENT_ROOT = REPOSITORY_ROOT.parents[1]
 CLAUDE_E2E_MODEL = "claude-sonnet-5"
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
+_OWNER_MARKER_NAME = ".sensai-e2e-owner.json"
 _MANIFEST = {
     "auth_records": ["claudeAiOauth"],
     "format_version": 1,
@@ -72,12 +75,17 @@ class ClaudeE2EProfile:
     def baseline_credentials(self) -> Path:
         return self.root / "baseline" / "config" / ".credentials.json"
 
+    @property
+    def owner_marker(self) -> Path:
+        return self.root / _OWNER_MARKER_NAME
+
 
 @dataclass(frozen=True, slots=True)
 class ClaudeE2ERun:
     """One disposable execution directory and its complete Claude environment."""
 
     root: Path
+    work: Path
     environment: dict[str, str]
     model: str = CLAUDE_E2E_MODEL
 
@@ -90,9 +98,17 @@ def _assert_profile_location(profile: Path) -> Path:
     absolute = _absolute(profile)
     physical = absolute.resolve(strict=False)
     repository = REPOSITORY_ROOT.resolve(strict=True)
+    development = DEVELOPMENT_ROOT.resolve(strict=True)
     if physical.is_relative_to(repository) or repository.is_relative_to(physical):
         raise ClaudeE2EProfileError("persistent profile must be outside the plugin repository")
-    return absolute
+    if physical.is_relative_to(development):
+        raise ClaudeE2EProfileError("persistent profile must be outside the development directory")
+    permitted_root = (Path.home() / ".local" / "share").resolve(strict=False)
+    if physical == permitted_root or not physical.is_relative_to(permitted_root):
+        raise ClaudeE2EProfileError(
+            "persistent profile must be under the local Linux home share directory"
+        )
+    return physical
 
 
 def _assert_separate_from_source(profile: Path, source_credentials: Path) -> None:
@@ -169,6 +185,7 @@ def describe_provision(profile: Path, source_credentials: Path) -> ProvisionDesc
 def _mkdir_private(path: Path) -> None:
     path.mkdir(mode=0o700)
     path.chmod(0o700)
+    _assert_observed_mode(path, 0o700)
 
 
 def _write_private(path: Path, content: bytes) -> None:
@@ -183,6 +200,41 @@ def _write_private(path: Path, content: bytes) -> None:
             path.unlink()
         raise
     path.chmod(0o600)
+    _assert_observed_mode(path, 0o600)
+
+
+def _assert_observed_mode(path: Path, expected: int) -> None:
+    try:
+        actual = stat.S_IMODE(os.lstat(path).st_mode)
+    except OSError as error:
+        raise ClaudeE2EProfileError(
+            "could not verify private local filesystem permissions"
+        ) from error
+    if actual != expected:
+        raise ClaudeE2EProfileError(
+            "persistent profile requires a Linux filesystem that enforces private permissions"
+        )
+
+
+def _directory_identity(path: Path) -> tuple[int, int]:
+    try:
+        item = os.lstat(path)
+    except OSError as error:
+        raise ClaudeE2EProfileError("owned directory is unavailable") from error
+    if stat.S_ISLNK(item.st_mode) or not stat.S_ISDIR(item.st_mode):
+        raise ClaudeE2EProfileError("owned directory is unsafe")
+    return item.st_dev, item.st_ino
+
+
+def _owner_marker(nonce: str) -> bytes:
+    return (json.dumps({"format_version": 1, "nonce": nonce}, sort_keys=True) + "\n").encode()
+
+
+def _has_owner_marker(profile: Path, nonce: str) -> bool:
+    try:
+        return _read_regular_bytes(profile / _OWNER_MARKER_NAME) == _owner_marker(nonce)
+    except ClaudeE2EProfileError:
+        return False
 
 
 @contextmanager
@@ -210,13 +262,9 @@ def _profile_lock(profile: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _remove_owned_tree(root: Path) -> None:
-    try:
-        root_stat = os.lstat(root)
-    except FileNotFoundError:
-        return
-    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
-        raise ClaudeE2EProfileError("owned run directory is unsafe")
+def _remove_owned_tree(root: Path, expected_identity: tuple[int, int]) -> None:
+    if _directory_identity(root) != expected_identity:
+        raise ClaudeE2EProfileError("owned directory changed before cleanup")
     for path in sorted(root.rglob("*"), reverse=True):
         if path.is_symlink():
             continue
@@ -235,8 +283,17 @@ def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfi
     description = describe_provision(profile, source_credentials)
     credentials = _minimal_credentials(source_credentials)
     root = description.profile
+    root.parent.mkdir(parents=True, exist_ok=True)
+    created_identity: tuple[int, int] | None = None
+    owner_nonce: str | None = None
     try:
-        _mkdir_private(root)
+        try:
+            _mkdir_private(root)
+        except FileExistsError as error:
+            raise ClaudeE2EProfileError("persistent profile already exists") from error
+        created_identity = _directory_identity(root)
+        owner_nonce = secrets.token_hex(32)
+        _write_private(root / _OWNER_MARKER_NAME, _owner_marker(owner_nonce))
         with _profile_lock(root):
             baseline = root / "baseline"
             config = baseline / "config"
@@ -249,8 +306,12 @@ def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfi
                 (json.dumps(_MANIFEST, sort_keys=True) + "\n").encode(),
             )
     except BaseException:
-        if root.exists() and root.is_dir() and not root.is_symlink():
-            _remove_owned_tree(root)
+        if (
+            created_identity is not None
+            and owner_nonce is not None
+            and _has_owner_marker(root, owner_nonce)
+        ):
+            _remove_owned_tree(root, created_identity)
         raise
     return ClaudeE2EProfile(root)
 
@@ -263,6 +324,7 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
         raise ClaudeE2EProfileError("persistent profile is unavailable") from error
     if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
         raise ClaudeE2EProfileError("persistent profile is unsafe")
+    _assert_observed_mode(root, 0o700)
     manifest = root / "manifest.json"
     try:
         value = json.loads(_read_regular_bytes(manifest))
@@ -271,7 +333,19 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
     if value != _MANIFEST:
         raise ClaudeE2EProfileError("persistent profile manifest is not recognized")
     result = ClaudeE2EProfile(root)
-    _minimal_credentials(result.baseline_credentials)
+    try:
+        owner = json.loads(_read_regular_bytes(result.owner_marker))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ClaudeE2EProfileError("persistent profile ownership marker is invalid") from error
+    if (
+        not isinstance(owner, dict)
+        or owner.get("format_version") != 1
+        or not isinstance(owner.get("nonce"), str)
+        or len(owner["nonce"]) != 64
+    ):
+        raise ClaudeE2EProfileError("persistent profile ownership marker is not recognized")
+    _assert_observed_mode(result.owner_marker, 0o600)
+    _load_baseline_credentials(result.baseline_credentials)
     runs = root / "runs"
     try:
         runs_stat = os.lstat(runs)
@@ -280,6 +354,19 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
     if stat.S_ISLNK(runs_stat.st_mode) or not stat.S_ISDIR(runs_stat.st_mode):
         raise ClaudeE2EProfileError("persistent profile run directory is unsafe")
     return result
+
+
+def _load_baseline_credentials(path: Path) -> bytes:
+    try:
+        value = json.loads(_read_regular_bytes(path))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ClaudeE2EProfileError("persistent Claude login record is invalid") from error
+    if not isinstance(value, dict) or set(value) != {"claudeAiOauth"}:
+        raise ClaudeE2EProfileError("persistent Claude login record was changed")
+    if not isinstance(value["claudeAiOauth"], dict):
+        raise ClaudeE2EProfileError("persistent Claude login record was changed")
+    _assert_observed_mode(path, 0o600)
+    return (json.dumps(value, sort_keys=True) + "\n").encode()
 
 
 def _run_environment(root: Path) -> dict[str, str]:
@@ -313,16 +400,22 @@ def create_fresh_run(profile: Path) -> Iterator[ClaudeE2ERun]:
     persistent = _load_profile(profile)
     with _profile_lock(persistent.root):
         run_root = Path(tempfile.mkdtemp(prefix="run-", dir=persistent.root / "runs"))
+        run_identity = _directory_identity(run_root)
         try:
             run_root.chmod(0o700)
+            _assert_observed_mode(run_root, 0o700)
+            work = run_root / "work"
+            _mkdir_private(work)
+            if any(work.iterdir()):
+                raise ClaudeE2EProfileError("fresh Claude E2E working directory is not empty")
             environment = _run_environment(run_root)
             _write_private(
                 Path(environment["CLAUDE_CONFIG_DIR"]) / ".credentials.json",
-                _minimal_credentials(persistent.baseline_credentials),
+                _load_baseline_credentials(persistent.baseline_credentials),
             )
-            yield ClaudeE2ERun(run_root, environment)
+            yield ClaudeE2ERun(run_root, work, environment)
         finally:
-            _remove_owned_tree(run_root)
+            _remove_owned_tree(run_root, run_identity)
 
 
 def _source_from_arguments(arguments: argparse.Namespace) -> Path:

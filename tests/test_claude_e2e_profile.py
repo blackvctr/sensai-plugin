@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from sensai_plugin import claude_e2e_profile as profile_module
 from sensai_plugin.claude_e2e_profile import (
     CLAUDE_E2E_MODEL,
     ClaudeE2EProfileError,
@@ -14,6 +16,17 @@ from sensai_plugin.claude_e2e_profile import (
     main,
     provision_profile,
 )
+
+
+@pytest.fixture(autouse=True)
+def _local_linux_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "linux-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+
+def _profile_path() -> Path:
+    return Path.home() / ".local" / "share" / "sensai-claude-e2e"
 
 
 def _source_path(tmp_path: Path) -> Path:
@@ -35,7 +48,7 @@ def _credentials(path: Path) -> dict[str, object]:
 def test_describe_provision_reads_only_one_explicit_valid_credential_file(tmp_path: Path) -> None:
     source = _source_path(tmp_path)
     _credentials(source)
-    target = tmp_path / "profile"
+    target = _profile_path()
 
     description = describe_provision(target, source)
 
@@ -51,7 +64,7 @@ def test_cli_dry_run_does_not_create_profile_or_print_authorization(
 ) -> None:
     source = _source_path(tmp_path)
     _credentials(source)
-    target = tmp_path / "persistent-profile"
+    target = _profile_path()
 
     assert main(
         [
@@ -72,7 +85,7 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
     original = _credentials(source)
     source_parent_file = source.parent / "history.jsonl"
     source_parent_file.write_text("not an authorization record", encoding="utf-8")
-    target = tmp_path / "persistent-profile"
+    target = _profile_path()
 
     profile = provision_profile(target, source)
 
@@ -84,6 +97,8 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
     assert not (profile.root / "baseline" / "secure-storage").exists()
     assert profile.root.stat().st_mode & 0o777 == 0o700
     assert baseline.stat().st_mode & 0o777 == 0o600
+    assert profile.owner_marker.stat().st_mode & 0o777 == 0o600
+    assert (profile.root / "manifest.json").stat().st_mode & 0o777 == 0o600
     assert (profile.root / "runs").stat().st_mode & 0o777 == 0o700
     assert json.loads((profile.root / "manifest.json").read_text(encoding="utf-8")) == {
         "auth_records": ["claudeAiOauth"],
@@ -95,8 +110,8 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
 def test_provision_refuses_existing_target_without_overwriting_it(tmp_path: Path) -> None:
     source = _source_path(tmp_path)
     _credentials(source)
-    target = tmp_path / "persistent-profile"
-    target.mkdir()
+    target = _profile_path()
+    target.mkdir(parents=True)
     marker = target / "keep"
     marker.write_text("unchanged", encoding="utf-8")
 
@@ -122,7 +137,7 @@ def test_provision_rejects_credential_file_without_claude_login(
     source.chmod(0o600)
 
     with pytest.raises(ClaudeE2EProfileError, match="Claude login"):
-        provision_profile(tmp_path / "persistent-profile", source)
+        provision_profile(_profile_path(), source)
 
 
 def test_provision_rejects_symlinked_or_repository_target(tmp_path: Path) -> None:
@@ -132,14 +147,19 @@ def test_provision_rejects_symlinked_or_repository_target(tmp_path: Path) -> Non
     linked.symlink_to(source)
 
     with pytest.raises(ClaudeE2EProfileError, match="regular file"):
-        provision_profile(tmp_path / "persistent-profile", linked)
+        provision_profile(_profile_path(), linked)
 
     with pytest.raises(ClaudeE2EProfileError, match="outside the plugin repository"):
         provision_profile(Path.cwd() / ".temporary-profile", source)
 
+    development_sibling = profile_module.DEVELOPMENT_ROOT / "another-project" / "profile"
+    with pytest.raises(ClaudeE2EProfileError, match="outside the development directory"):
+        provision_profile(development_sibling, source)
+
 
 def test_provision_rejects_target_inside_source_profile(tmp_path: Path) -> None:
-    source = _source_path(tmp_path)
+    source = Path.home() / ".local" / "share" / "source-profile" / ".credentials.json"
+    source.parent.mkdir(parents=True)
     _credentials(source)
 
     with pytest.raises(ClaudeE2EProfileError, match="separate from the source"):
@@ -151,7 +171,7 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
 ) -> None:
     source = _source_path(tmp_path)
     _credentials(source)
-    profile = provision_profile(tmp_path / "persistent-profile", source)
+    profile = provision_profile(_profile_path(), source)
     old_env = {
         name: os.environ.get(name)
         for name in (
@@ -172,6 +192,9 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
     with create_fresh_run(profile.root) as run:
         assert run.root.parent == profile.root / "runs"
         assert run.root.stat().st_mode & 0o777 == 0o700
+        assert run.work == run.root / "work"
+        assert run.work.is_dir() and not list(run.work.iterdir())
+        assert run.work.stat().st_mode & 0o777 == 0o700
         copied = json.loads(
             (run.root / "config" / ".credentials.json").read_text(encoding="utf-8")
         )
@@ -211,8 +234,89 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
 def test_fresh_run_rejects_tampered_persistent_profile(tmp_path: Path) -> None:
     source = _source_path(tmp_path)
     _credentials(source)
-    profile = provision_profile(tmp_path / "persistent-profile", source)
+    profile = provision_profile(_profile_path(), source)
     (profile.root / "manifest.json").write_text("{}", encoding="utf-8")
 
     with pytest.raises(ClaudeE2EProfileError, match="manifest"), create_fresh_run(profile.root):
         pytest.fail("tampered profile must not create a run")
+
+
+def test_fresh_run_rejects_tampered_or_symlinked_credential_baseline(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    profile = provision_profile(_profile_path(), source)
+    baseline = profile.baseline_credentials
+    baseline.write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {"accessToken": "private-Claude-token"},
+                "mcpOAuth": {"plugin:sensai:sensai": {"accessToken": "injected"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    baseline.chmod(0o600)
+
+    with pytest.raises(
+        ClaudeE2EProfileError, match="login record was changed"
+    ), create_fresh_run(profile.root):
+        pytest.fail("tampered baseline must not create a run")
+
+    baseline.unlink()
+    baseline.symlink_to(source)
+    with pytest.raises(ClaudeE2EProfileError, match="regular file"), create_fresh_run(
+        profile.root
+    ):
+        pytest.fail("symlinked baseline must not create a run")
+
+
+def test_run_is_removed_when_caller_raises(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    profile = provision_profile(_profile_path(), source)
+    run_root: Path | None = None
+
+    with pytest.raises(RuntimeError, match="body failed"), create_fresh_run(profile.root) as run:
+        run_root = run.root
+        raise RuntimeError("body failed")
+
+    assert run_root is not None and not run_root.exists()
+
+
+def test_provision_does_not_remove_directory_created_by_another_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    target = _profile_path()
+    original_mkdir = profile_module._mkdir_private
+
+    def another_operation_creates(path: Path) -> None:
+        if path == target:
+            path.mkdir(parents=True)
+            (path / "belongs-to-someone-else").write_text("keep", encoding="utf-8")
+            raise FileExistsError(path)
+        original_mkdir(path)
+
+    monkeypatch.setattr(profile_module, "_mkdir_private", another_operation_creates)
+
+    with pytest.raises(ClaudeE2EProfileError, match="already exists"):
+        provision_profile(target, source)
+
+    assert (target / "belongs-to-someone-else").read_text(encoding="utf-8") == "keep"
+
+
+def test_provision_rejects_profile_when_private_modes_cannot_be_observed(
+    tmp_path: Path,
+) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    target = _profile_path()
+
+    with patch(
+        "sensai_plugin.claude_e2e_profile.stat.S_IMODE", return_value=0o777
+    ), pytest.raises(ClaudeE2EProfileError, match="Linux filesystem"):
+        provision_profile(target, source)
+
+    assert target.exists()
+    assert not (target / profile_module._OWNER_MARKER_NAME).exists()
