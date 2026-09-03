@@ -157,6 +157,10 @@ def _minimal_credentials(source: Path) -> bytes:
         document = json.loads(_read_regular_bytes(source))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ClaudeE2EProfileError("Claude authorization source is not valid JSON") from error
+    if source.name != ".credentials.json":
+        raise ClaudeE2EProfileError(
+            "Claude authorization source must be the dedicated .credentials.json file"
+        )
     if not isinstance(document, dict) or not isinstance(document.get("claudeAiOauth"), dict):
         raise ClaudeE2EProfileError("Claude authorization source has no Claude login")
     minimal = {"claudeAiOauth": document["claudeAiOauth"]}
@@ -180,7 +184,11 @@ def discover_current_credentials() -> Path:
 
     configured = os.environ.get("CLAUDE_CONFIG_DIR")
     config = Path(configured) if configured else Path.home() / ".claude"
-    return _absolute(config / ".credentials.json")
+    source = _absolute(config / ".credentials.json")
+    # This validates only availability and the dedicated Claude-login shape;
+    # it neither copies a record nor probes broad ~/.claude.json state.
+    _minimal_credentials(source)
+    return source
 
 
 def describe_provision(profile: Path, source_credentials: Path) -> ProvisionDescription:

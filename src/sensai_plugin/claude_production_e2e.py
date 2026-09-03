@@ -28,23 +28,26 @@ import json
 import os
 import re
 import selectors
+import shlex
 import signal
+import shutil
 import subprocess
 import time
 import uuid
-from collections import deque
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_SONNET_5_MODEL,
     PublicReadmeContract,
-    _load_public_readme_contract,
+    _public_contract_from_markdown,
 )
 
 INSTALL_TIMEOUT_SECONDS = 300
@@ -55,6 +58,9 @@ FORGET_ME_TIMEOUT_SECONDS = 60
 PROCESS_TERMINATION_GRACE_SECONDS = 3
 MAX_STREAM_LINE_BYTES = 256 * 1024
 MAX_STREAM_EVENTS = 128
+MAX_TOOL_INPUT_BYTES = 32 * 1024
+MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
+PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
@@ -66,18 +72,80 @@ _TELEGRAM_FACTS = (
     "готовить ответы на повторяющиеся вопросы."
 )
 _FORGET_ME_REQUEST = "Заверши проверку: вызови инструмент Sensai forget_me ровно один раз."
+_INITIAL_DISCOVERY_REPLY = (
+    "Я Sensai. Помоги получить от человека его роль, примерно пять привычных программ или сайтов "
+    "и повторяющиеся рабочие задачи, затем передай мне ответы. Так рекомендации будут полезны "
+    "именно для его работы."
+)
+_TELEGRAM_BODY_PATH = Path(__file__).resolve().parents[3] / "server" / "knowledge-base" / "connectors" / "telegram.md"
 
 
 class ProductionE2EError(RuntimeError):
     """The safe production acceptance report contains one failed phase."""
 
 
+def fetch_public_readme_contract() -> PublicReadmeContract:
+    """Fetch the exact public README used by the person; never consult checkout text."""
+
+    request = Request(PUBLIC_README_URL, headers={"Accept": "text/plain"})
+    try:
+        with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed HTTPS public origin.
+            body = response.read(MAX_PUBLIC_README_BYTES + 1)
+    except OSError as error:
+        raise ProductionE2EError("public_readme_unavailable") from error
+    if len(body) > MAX_PUBLIC_README_BYTES:
+        raise ProductionE2EError("public_readme_too_large")
+    try:
+        contract = _public_contract_from_markdown(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ProductionE2EError("public_readme_invalid") from error
+    if contract.russian_install_prompt != f"Установи Sensai {PUBLIC_README_URL}":
+        raise ProductionE2EError("public_readme_prompt_not_exact")
+    return contract
+
+
+def resolve_installed_wsl_claude() -> str:
+    """Accept only the normal WSL Claude launcher and its private version binary."""
+
+    found = shutil.which("claude")
+    launcher = Path.home() / ".local" / "bin" / "claude"
+    versions = Path.home() / ".local" / "share" / "claude" / "versions"
+    if found is None or Path(found).absolute() != launcher.absolute() or not launcher.is_symlink():
+        raise ProductionE2EError("approved_wsl_claude_unavailable")
+    try:
+        executable = launcher.resolve(strict=True)
+        mode = executable.stat().st_mode
+    except OSError as error:
+        raise ProductionE2EError("approved_wsl_claude_unavailable") from error
+    if (
+        not executable.is_relative_to(versions)
+        or executable.parent != versions
+        or not executable.is_file()
+        or mode & 0o022
+        or not mode & 0o100
+    ):
+        raise ProductionE2EError("approved_wsl_claude_unavailable")
+    return str(executable)
+
+
 class ToolKind(StrEnum):
     """Only tool facts the runner may retain after a stream is consumed."""
 
     LOGIN = "sensai_login"
+    MARKETPLACE_ADD = "public_marketplace_add"
+    PLUGIN_INSTALL = "public_plugin_install"
+    NEW_CHAT_URI = "new_chat_uri"
+    FORBIDDEN_BROWSER_MODE = "forbidden_browser_mode"
     TELL_SENSAI = "tell_sensai"
     FORGET_ME = "forget_me"
+    OTHER = "other"
+
+
+class SensaiReplyKind(StrEnum):
+    """Only safe classifications of an observed tell_sensai result."""
+
+    INITIAL_DISCOVERY = "initial_discovery"
+    TELEGRAM_COMPOSED = "telegram_composed"
     OTHER = "other"
 
 
@@ -88,6 +156,13 @@ class TextEvidence:
     matches_expected: bool
     cyrillic_letters: int
     latin_letters: int
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultEvidence:
+    kind: ToolKind
+    succeeded: bool
+    sensai_reply: SensaiReplyKind | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +177,7 @@ class AgentEvidence:
     text_messages: tuple[TextEvidence, ...]
     tool_calls: tuple[ToolKind, ...]
     successful_tool_results: tuple[ToolKind, ...]
+    tool_results: tuple[ToolResultEvidence, ...]
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -135,9 +211,19 @@ class ClaudeDriver(Protocol):
         timeout_seconds: int,
         expected_visible_messages: Sequence[str],
         expected_session: uuid.UUID,
+        expected_new_chat_uri: str | None,
     ) -> AgentEvidence: ...
 
     def mcp_connected(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        timeout_seconds: int,
+    ) -> bool: ...
+
+    def claude_authenticated(
         self,
         command: Sequence[str],
         *,
@@ -171,6 +257,7 @@ class SubprocessClaudeDriver:
         timeout_seconds: int,
         expected_visible_messages: Sequence[str],
         expected_session: uuid.UUID,
+        expected_new_chat_uri: str | None,
     ) -> AgentEvidence:
         _assert_normal_browser_path(command)
         if timeout_seconds <= 0:
@@ -192,6 +279,7 @@ class SubprocessClaudeDriver:
             timeout_seconds=timeout_seconds,
             expected_visible_messages=expected_visible_messages,
             expected_session=expected_session,
+            expected_new_chat_uri=expected_new_chat_uri,
         )
 
     def mcp_connected(
@@ -236,6 +324,31 @@ class SubprocessClaudeDriver:
             and _STATUS_FAILURE.search(status) is None
         )
 
+    def claude_authenticated(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        timeout_seconds: int,
+    ) -> bool:
+        _assert_normal_browser_path(command)
+        try:
+            completed = subprocess.run(
+                list(command), cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if completed.returncode != 0:
+            return False
+        try:
+            status = json.loads(completed.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return isinstance(status, dict) and status.get("loggedIn") is True
+
 
 @dataclass(slots=True)
 class _TextAccumulator:
@@ -260,59 +373,12 @@ class _TextAccumulator:
 
 
 @dataclass(slots=True)
-class _LoginCommandScanner:
-    """Recognize the fixed login subcommand across JSON chunks without storing them."""
-
-    token_index: int = 0
-    character_index: int = 0
-    waiting_for_space: bool = False
-    matched: bool = False
-
-    _TOKENS = ("mcp", "login", "plugin:sensai:sensai")
-
-    def add(self, fragment: str) -> None:
-        for character in fragment.lower():
-            self._add_character(character)
-
-    def _add_character(self, character: str) -> None:
-        if self.matched:
-            return
-        if self.waiting_for_space:
-            if character.isspace():
-                self.waiting_for_space = False
-                self.character_index = 0
-                return
-            self._restart(character)
-            return
-        token = self._TOKENS[self.token_index]
-        if character == token[self.character_index]:
-            self.character_index += 1
-            if self.character_index == len(token):
-                if self.token_index == len(self._TOKENS) - 1:
-                    self.matched = True
-                else:
-                    self.token_index += 1
-                    self.waiting_for_space = True
-            return
-        self._restart(character)
-
-    def _restart(self, character: str) -> None:
-        self.token_index = 0
-        self.waiting_for_space = False
-        self.character_index = 1 if character == self._TOKENS[0][0] else 0
-
-
-@dataclass(slots=True)
 class _ToolAccumulator:
     """One tool-use block reduced to a kind once its JSON input is complete."""
 
     direct_kind: ToolKind | None
-    login_scanner: _LoginCommandScanner
-
-    def kind(self) -> ToolKind:
-        if self.direct_kind is not None:
-            return self.direct_kind
-        return ToolKind.LOGIN if self.login_scanner.matched else ToolKind.OTHER
+    result_key: bytes | None
+    input_chunks: list[str]
 
 
 def _direct_tool_kind(block: object) -> ToolKind | None:
@@ -326,17 +392,69 @@ def _direct_tool_kind(block: object) -> ToolKind | None:
     return None
 
 
+def _safe_tool_result_key(value: object) -> bytes | None:
+    """Bind a result to a tool call without retaining the tool-use identifier."""
+
+    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 512:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).digest()
+
+
+def _classify_bash_command(command: str, expected_uri: str | None) -> ToolKind:
+    """Accept only actual Bash command semantics, never prose containing a command."""
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return ToolKind.OTHER
+    if "--no-browser" in tokens:
+        return ToolKind.FORBIDDEN_BROWSER_MODE
+    if len(tokens) == 2 and tokens[0] in {"xdg-open", "open"} and tokens[1] == expected_uri:
+        return ToolKind.NEW_CHAT_URI
+    if tokens and tokens[0] == "script" and "-c" in tokens:
+        position = tokens.index("-c") + 1
+        if position >= len(tokens):
+            return ToolKind.OTHER
+        try:
+            tokens = shlex.split(tokens[position], posix=True)
+        except ValueError:
+            return ToolKind.OTHER
+    if tokens == ["claude", "mcp", "login", "plugin:sensai:sensai"]:
+        return ToolKind.LOGIN
+    if tokens == ["claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]:
+        return ToolKind.MARKETPLACE_ADD
+    if tokens == ["claude", "plugin", "install", "sensai@sensai", "--scope", "user"]:
+        return ToolKind.PLUGIN_INSTALL
+    return ToolKind.OTHER
+
+
 def _new_tool_accumulator(block: object) -> _ToolAccumulator:
-    scanner = _LoginCommandScanner()
-    input_value = block.get("input") if isinstance(block, dict) else None
-    command = input_value.get("command") if isinstance(input_value, dict) else None
-    if isinstance(command, str):
-        scanner.add(command)
-    return _ToolAccumulator(_direct_tool_kind(block), scanner)
+    identifier = block.get("id") if isinstance(block, dict) else None
+    return _ToolAccumulator(_direct_tool_kind(block), _safe_tool_result_key(identifier), [])
 
 
-def _tool_result_successes(record: object, outstanding: deque[ToolKind]) -> list[ToolKind]:
-    """Reduce tool result blocks to success/failure categories without contents."""
+def _telegram_body() -> str | None:
+    try:
+        return _TELEGRAM_BODY_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _sensai_reply_kind(content: object) -> SensaiReplyKind:
+    text = content if isinstance(content, str) else None
+    if text == _INITIAL_DISCOVERY_REPLY:
+        return SensaiReplyKind.INITIAL_DISCOVERY
+    body = _telegram_body()
+    delimiter = "\n\nInstruction:\n"
+    if body is not None and text is not None and text.count(delimiter) == 1:
+        prefix, _, article = text.partition(delimiter)
+        if prefix and article == body:
+            return SensaiReplyKind.TELEGRAM_COMPOSED
+    return SensaiReplyKind.OTHER
+
+
+def _tool_results(record: object, outstanding: dict[bytes, ToolKind]) -> list[ToolResultEvidence]:
+    """Reduce tool results to fixed outcome categories, retaining no text or IDs."""
 
     if not isinstance(record, dict) or record.get("type") != "user":
         return []
@@ -344,14 +462,16 @@ def _tool_result_successes(record: object, outstanding: deque[ToolKind]) -> list
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, list):
         return []
-    successes: list[ToolKind] = []
+    results: list[ToolResultEvidence] = []
     for block in content:
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
-        kind = outstanding.popleft() if outstanding else ToolKind.OTHER
-        if block.get("is_error") is not True:
-            successes.append(kind)
-    return successes
+        key = _safe_tool_result_key(block.get("tool_use_id"))
+        kind = outstanding.pop(key, ToolKind.OTHER) if key is not None else ToolKind.OTHER
+        succeeded = block.get("is_error") is not True
+        reply = _sensai_reply_kind(block.get("content")) if kind is ToolKind.TELL_SENSAI else None
+        results.append(ToolResultEvidence(kind, succeeded, reply))
+    return results
 
 
 def _stream_event(record: object) -> object | None:
@@ -386,6 +506,7 @@ def _consume_stream(
     timeout_seconds: int,
     expected_visible_messages: Sequence[str],
     expected_session: uuid.UUID,
+    expected_new_chat_uri: str | None = None,
 ) -> AgentEvidence:
     """Consume one JSON stream without retaining a raw line or error message."""
 
@@ -399,8 +520,8 @@ def _consume_stream(
     tool_blocks: dict[int, _ToolAccumulator] = {}
     text_messages: list[TextEvidence] = []
     calls: list[ToolKind] = []
-    successes: list[ToolKind] = []
-    outstanding: deque[ToolKind] = deque()
+    results: list[ToolResultEvidence] = []
+    outstanding: dict[bytes, ToolKind] = {}
     result_seen = session_verified = malformed = timed_out = False
     event_count = 0
     deadline = time.monotonic() + timeout_seconds
@@ -420,7 +541,7 @@ def _consume_stream(
             malformed = True
             return
         session_verified = session_verified or _verify_session(record, expected_session)
-        successes.extend(_tool_result_successes(record, outstanding))
+        results.extend(_tool_results(record, outstanding))
         if isinstance(record, dict) and record.get("type") == "result":
             result_seen = True
         event = _stream_event(record)
@@ -455,7 +576,10 @@ def _consume_stream(
             partial_json = delta.get("partial_json") if isinstance(delta, dict) else None
             tool_accumulator = tool_blocks.get(index) if isinstance(index, int) else None
             if tool_accumulator is not None and isinstance(partial_json, str):
-                tool_accumulator.login_scanner.add(partial_json)
+                if sum(len(part) for part in tool_accumulator.input_chunks) + len(partial_json) > MAX_TOOL_INPUT_BYTES:
+                    malformed = True
+                    return
+                tool_accumulator.input_chunks.append(partial_json)
             return
         if event_type == "content_block_stop":
             index = event.get("index")
@@ -476,9 +600,22 @@ def _consume_stream(
                 )
             tool_accumulator = tool_blocks.pop(index, None) if isinstance(index, int) else None
             if tool_accumulator is not None:
-                kind = tool_accumulator.kind()
+                kind = tool_accumulator.direct_kind
+                if kind is None:
+                    try:
+                        input_value = json.loads("".join(tool_accumulator.input_chunks))
+                    except json.JSONDecodeError:
+                        kind = ToolKind.OTHER
+                    else:
+                        command = input_value.get("command") if isinstance(input_value, dict) else None
+                        kind = (
+                            _classify_bash_command(command, expected_new_chat_uri)
+                            if isinstance(command, str)
+                            else ToolKind.OTHER
+                        )
                 calls.append(kind)
-                outstanding.append(kind)
+                if tool_accumulator.result_key is not None:
+                    outstanding[tool_accumulator.result_key] = kind
 
     try:
         while process.poll() is None or pending:
@@ -521,7 +658,8 @@ def _consume_stream(
         returncode=process.wait(),
         text_messages=tuple(text_messages),
         tool_calls=tuple(calls),
-        successful_tool_results=tuple(successes),
+        successful_tool_results=tuple(result.kind for result in results if result.succeeded),
+        tool_results=tuple(results),
     )
 
 
@@ -554,6 +692,10 @@ def _status_command(executable: str) -> tuple[str, ...]:
     return command
 
 
+def _auth_status_command(executable: str) -> tuple[str, ...]:
+    return (executable, "auth", "status")
+
+
 class ProductionSensaiE2E:
     """One explicit production check using a local disposable Claude run."""
 
@@ -561,25 +703,28 @@ class ProductionSensaiE2E:
         self,
         *,
         profile: Path,
-        claude_executable: str = "claude",
         driver: ClaudeDriver | None = None,
+        contract_loader: Callable[[], PublicReadmeContract] = fetch_public_readme_contract,
+        executable_resolver: Callable[[], str] = resolve_installed_wsl_claude,
     ) -> None:
-        if not claude_executable or any(character.isspace() for character in claude_executable):
-            raise ProductionE2EError("invalid_claude_executable")
         self._profile = profile
-        self._executable = claude_executable
         self._driver = driver or SubprocessClaudeDriver()
+        self._contract_loader = contract_loader
+        self._executable_resolver = executable_resolver
 
     def run(self) -> ProductionE2EReport:
         """Install, authenticate, consult Telegram, forget, then remove local state."""
 
-        contract = _load_public_readme_contract()
+        contract = self._contract_loader()
+        executable = self._executable_resolver()
         installation_session = uuid.uuid4()
         telegram_session = uuid.uuid4()
         with create_fresh_run(self._profile) as run:
             return self._run_inside_fresh_profile(
                 run,
                 contract=contract,
+                executable=executable,
+                new_chat_uri="claude://code/new?" + urlencode({"q": contract.russian_new_chat_request}),
                 installation_session=installation_session,
                 telegram_session=telegram_session,
             )
@@ -589,15 +734,23 @@ class ProductionSensaiE2E:
         run: ClaudeE2ERun,
         *,
         contract: PublicReadmeContract,
+        executable: str,
+        new_chat_uri: str,
         installation_session: uuid.UUID,
         telegram_session: uuid.UUID,
     ) -> ProductionE2EReport:
         cleanup_needed = False
+        cleanup_session = installation_session
         primary_error: ProductionE2EError | None = None
         try:
+            if not self._driver.claude_authenticated(
+                _auth_status_command(executable), cwd=run.work, environment=run.environment,
+                timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
+            ):
+                raise ProductionE2EError("isolated_claude_auth_not_verified")
             installation = self._driver.run_agent(
                 _agent_command(
-                    self._executable,
+                    executable,
                     prompt=contract.russian_install_prompt,
                     session=installation_session,
                     resume=False,
@@ -610,6 +763,11 @@ class ProductionSensaiE2E:
                     contract.russian_ready_message,
                 ),
                 expected_session=installation_session,
+                expected_new_chat_uri=new_chat_uri,
+            )
+            cleanup_needed = any(
+                kind in {ToolKind.LOGIN, ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL}
+                for kind in installation.tool_calls
             )
             self._require_installation(installation)
             normal_login_started = installation.tool_calls.count(ToolKind.LOGIN) == 1
@@ -619,17 +777,15 @@ class ProductionSensaiE2E:
             if not normal_login_completed:
                 raise ProductionE2EError("normal_login_not_completed")
             if not self._driver.mcp_connected(
-                _status_command(self._executable),
+                _status_command(executable),
                 cwd=run.work,
                 environment=run.environment,
                 timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
             ):
                 raise ProductionE2EError("sensai_connection_not_verified")
-            cleanup_needed = True
-
             telegram_start = self._driver.run_agent(
                 _agent_command(
-                    self._executable,
+                    executable,
                     prompt=contract.russian_new_chat_request,
                     session=telegram_session,
                     resume=False,
@@ -639,11 +795,15 @@ class ProductionSensaiE2E:
                 timeout_seconds=TELEGRAM_START_TIMEOUT_SECONDS,
                 expected_visible_messages=(),
                 expected_session=telegram_session,
+                expected_new_chat_uri=None,
             )
-            self._require_tool_turn(telegram_start, ToolKind.TELL_SENSAI, "telegram_start")
+            cleanup_session = telegram_session
+            self._require_tool_turn(
+                telegram_start, ToolKind.TELL_SENSAI, "telegram_start", SensaiReplyKind.INITIAL_DISCOVERY
+            )
             telegram_continuation = self._driver.run_agent(
                 _agent_command(
-                    self._executable,
+                    executable,
                     prompt=_TELEGRAM_FACTS,
                     session=telegram_session,
                     resume=True,
@@ -653,11 +813,13 @@ class ProductionSensaiE2E:
                 timeout_seconds=TELEGRAM_CONTINUATION_TIMEOUT_SECONDS,
                 expected_visible_messages=(),
                 expected_session=telegram_session,
+                expected_new_chat_uri=None,
             )
             self._require_tool_turn(
                 telegram_continuation,
                 ToolKind.TELL_SENSAI,
                 "telegram_continuation",
+                SensaiReplyKind.TELEGRAM_COMPOSED,
             )
         except ProductionE2EError as error:
             primary_error = error
@@ -668,9 +830,9 @@ class ProductionSensaiE2E:
                 try:
                     cleanup = self._driver.run_agent(
                         _agent_command(
-                            self._executable,
+                            executable,
                             prompt=_FORGET_ME_REQUEST,
-                            session=telegram_session,
+                            session=cleanup_session,
                             resume=True,
                         ),
                         cwd=run.work,
@@ -678,8 +840,9 @@ class ProductionSensaiE2E:
                         timeout_seconds=FORGET_ME_TIMEOUT_SECONDS,
                         expected_visible_messages=(),
                         expected_session=telegram_session,
+                        expected_new_chat_uri=None,
                     )
-                    self._require_tool_turn(cleanup, ToolKind.FORGET_ME, "forget_me")
+                    self._require_tool_turn(cleanup, ToolKind.FORGET_ME, "forget_me", None)
                     cleanup_completed = True
                 except ProductionE2EError as error:
                     cleanup_error = error
@@ -715,9 +878,19 @@ class ProductionSensaiE2E:
             message.cyrillic_letters <= message.latin_letters for message in evidence.text_messages
         ):
             raise ProductionE2EError("installation_visible_message_not_russian")
+        for required in (ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL, ToolKind.NEW_CHAT_URI):
+            if evidence.tool_calls.count(required) != 1:
+                raise ProductionE2EError(f"installation_{required}_not_observed")
+        if ToolKind.FORBIDDEN_BROWSER_MODE in evidence.tool_calls:
+            raise ProductionE2EError("installation_no_browser_forbidden")
 
     @staticmethod
-    def _require_tool_turn(evidence: AgentEvidence, kind: ToolKind, phase: str) -> None:
+    def _require_tool_turn(
+        evidence: AgentEvidence,
+        kind: ToolKind,
+        phase: str,
+        expected_sensai_reply: SensaiReplyKind | None,
+    ) -> None:
         if evidence.timed_out:
             raise ProductionE2EError(f"{phase}_timed_out")
         if evidence.malformed or evidence.returncode != 0 or not evidence.result_seen:
@@ -726,3 +899,10 @@ class ProductionSensaiE2E:
             raise ProductionE2EError(f"{phase}_session_not_verified")
         if not evidence.has_successful(kind):
             raise ProductionE2EError(f"{phase}_tool_result_invalid")
+        if expected_sensai_reply is not None and not any(
+            result.kind is ToolKind.TELL_SENSAI
+            and result.succeeded
+            and result.sensai_reply is expected_sensai_reply
+            for result in evidence.tool_results
+        ):
+            raise ProductionE2EError(f"{phase}_reply_body_unavailable")

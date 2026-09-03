@@ -26,15 +26,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     parser.add_argument("--profile", required=True, type=Path)
-    parser.add_argument("--claude-executable", default="claude")
     arguments = parser.parse_args(argv)
     try:
         report = ProductionSensaiE2E(
             profile=arguments.profile,
-            claude_executable=arguments.claude_executable,
         ).run()
     except (ClaudeE2EProfileError, ProductionE2EError) as error:
         parser.exit(1, f"PRODUCTION_E2E_FAILED phase={error}\n")
+    except Exception:
+        parser.exit(1, "PRODUCTION_E2E_FAILED phase=unexpected\n")
     if not all(astuple(report)):
         parser.exit(1, "PRODUCTION_E2E_FAILED phase=incomplete_safe_report\n")
     print("PRODUCTION_E2E_PASS installation=telegram=cleanup")
