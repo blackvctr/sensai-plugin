@@ -26,6 +26,8 @@ from sensai_plugin.claude_production_e2e import (
     _assert_normal_browser_path,
     _classify_bash_command,
     _is_exact_public_sensai_inventory,
+    fetch_public_readme_contract,
+    PUBLIC_README_URL,
     _consume_stream,
 )
 
@@ -51,6 +53,46 @@ def _profile(tmp_path: Path) -> Path:
 def _test_contract():
     readme = Path(__file__).resolve().parents[1] / "README.md"
     return _public_contract_from_markdown(readme.read_text(encoding="utf-8"))
+
+
+class _PublicResponse:
+    def __init__(self, body: bytes, final_url: str) -> None:
+        self._body = body
+        self._final_url = final_url
+
+    def __enter__(self) -> _PublicResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def geturl(self) -> str:
+        return self._final_url
+
+    def read(self, _limit: int) -> bytes:
+        return self._body
+
+
+def test_public_readme_fetch_uses_exact_url_and_rejects_redirect(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = (Path(__file__).resolve().parents[1] / "README.md").read_bytes()
+
+    def public_source(request: object, *, timeout: int) -> _PublicResponse:
+        assert getattr(request, "full_url") == PUBLIC_README_URL
+        assert timeout == 20
+        return _PublicResponse(body, PUBLIC_README_URL)
+
+    monkeypatch.setattr(production_module, "urlopen", public_source)
+    assert fetch_public_readme_contract().russian_install_prompt.startswith("Установи Sensai ")
+
+    monkeypatch.setattr(
+        production_module,
+        "urlopen",
+        lambda *_args, **_kwargs: _PublicResponse(body, "https://example.invalid/README.md"),
+    )
+    with pytest.raises(ProductionE2EError, match="public_readme_redirected"):
+        fetch_public_readme_contract()
 
 
 def _runner(profile: Path, driver: ClaudeDriver) -> ProductionSensaiE2E:
@@ -135,7 +177,7 @@ class _FakeDriver(ClaudeDriver):
         )
         return next(self._agent_results)
 
-    def mcp_connected(
+    def mcp_configuration_observed(
         self,
         command: Sequence[str],
         *,
@@ -342,6 +384,9 @@ def test_runner_requires_exact_two_russian_installation_messages(tmp_path: Path)
         _runner(_profile(tmp_path), driver).run()
 
     assert len(driver.calls) == 3
+    assert _argument(driver.calls[1].command, "--session-id") == _argument(
+        driver.calls[2].command, "--resume"
+    )
 
 
 def test_failed_telegram_turn_still_calls_forget_me_before_temporary_profile_is_deleted(

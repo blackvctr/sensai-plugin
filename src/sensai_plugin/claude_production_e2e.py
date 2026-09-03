@@ -90,6 +90,8 @@ def fetch_public_readme_contract() -> PublicReadmeContract:
     request = Request(PUBLIC_README_URL, headers={"Accept": "text/plain"})
     try:
         with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed HTTPS public origin.
+            if response.geturl() != PUBLIC_README_URL:
+                raise ProductionE2EError("public_readme_redirected")
             body = response.read(MAX_PUBLIC_README_BYTES + 1)
     except OSError as error:
         raise ProductionE2EError("public_readme_unavailable") from error
@@ -215,7 +217,7 @@ class ClaudeDriver(Protocol):
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence: ...
 
-    def mcp_connected(
+    def mcp_configuration_observed(
         self,
         command: Sequence[str],
         *,
@@ -287,7 +289,7 @@ class SubprocessClaudeDriver:
             expected_new_chat_uri=expected_new_chat_uri,
         )
 
-    def mcp_connected(
+    def mcp_configuration_observed(
         self,
         command: Sequence[str],
         *,
@@ -797,7 +799,10 @@ class ProductionSensaiE2E:
         installation_session: uuid.UUID,
         telegram_session: uuid.UUID,
     ) -> ProductionE2EReport:
-        cleanup_needed = False
+        # An initial tool turn can reach OAuth before its stream has yielded a
+        # classifiable Bash block.  Arm cleanup first and use that initial
+        # session until a later Telegram session exists.
+        cleanup_needed = True
         cleanup_session = installation_session
         primary_error: ProductionE2EError | None = None
         try:
@@ -823,10 +828,6 @@ class ProductionSensaiE2E:
                 expected_session=installation_session,
                 expected_new_chat_uri=new_chat_uri,
             )
-            cleanup_needed = any(
-                kind in {ToolKind.LOGIN, ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL}
-                for kind in installation.tool_calls
-            )
             self._require_installation(installation)
             normal_login_started = installation.tool_calls.count(ToolKind.LOGIN) == 1
             normal_login_completed = installation.successful_tool_results.count(ToolKind.LOGIN) == 1
@@ -834,13 +835,13 @@ class ProductionSensaiE2E:
                 raise ProductionE2EError("normal_login_not_started")
             if not normal_login_completed:
                 raise ProductionE2EError("normal_login_not_completed")
-            if not self._driver.mcp_connected(
+            if not self._driver.mcp_configuration_observed(
                 _status_command(executable),
                 cwd=run.work,
                 environment=run.environment,
                 timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
             ):
-                raise ProductionE2EError("sensai_connection_not_verified")
+                raise ProductionE2EError("sensai_endpoint_configuration_not_verified")
             if not self._driver.public_sensai_plugin_installed(
                 _plugin_list_command(executable), cwd=run.work, environment=run.environment,
                 timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
@@ -973,6 +974,8 @@ class ProductionSensaiE2E:
         if not evidence.session_verified:
             raise ProductionE2EError(f"{phase}_session_not_verified")
         if not evidence.has_successful(kind):
+            if phase == "forget_me" and kind not in evidence.tool_calls:
+                raise ProductionE2EError("cleanup_not_authenticated")
             raise ProductionE2EError(f"{phase}_tool_result_invalid")
         if expected_sensai_reply is not None and not any(
             result.kind is ToolKind.TELL_SENSAI
