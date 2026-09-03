@@ -159,6 +159,7 @@ def test_readme_documents_the_two_exact_russian_claude_messages_in_order() -> No
     assert "Before calling any tool or taking an installation step" in readme
     assert "use exactly the two Russian messages" in readme
     assert "in the stated order" in readme
+    assert "use the second exact Russian message below" in claude_section
     assert claude_section.index(first_marker) < claude_section.index(second_marker)
     assert f"{first_marker}\n\n```text\n{first_message}\n```" in claude_section
     assert f"{second_marker}\n\n```text\n{second_message}\n```" in claude_section
