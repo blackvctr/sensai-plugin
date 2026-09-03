@@ -430,7 +430,9 @@ def _classify_bash_command(command: str, expected_uri: str | None) -> ToolKind:
 
 def _new_tool_accumulator(block: object) -> _ToolAccumulator:
     identifier = block.get("id") if isinstance(block, dict) else None
-    return _ToolAccumulator(_direct_tool_kind(block), _safe_tool_result_key(identifier), [])
+    input_value = block.get("input") if isinstance(block, dict) else None
+    initial = [json.dumps(input_value)] if isinstance(input_value, dict) and input_value else []
+    return _ToolAccumulator(_direct_tool_kind(block), _safe_tool_result_key(identifier), initial)
 
 
 def _telegram_body() -> str | None:
