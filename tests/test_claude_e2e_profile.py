@@ -100,11 +100,14 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
     assert profile.owner_marker.stat().st_mode & 0o777 == 0o600
     assert (profile.root / "manifest.json").stat().st_mode & 0o777 == 0o600
     assert (profile.root / "runs").stat().st_mode & 0o777 == 0o700
-    assert json.loads((profile.root / "manifest.json").read_text(encoding="utf-8")) == {
+    manifest = json.loads((profile.root / "manifest.json").read_text(encoding="utf-8"))
+    assert {key: value for key, value in manifest.items() if key != "claude_login_sha256"} == {
         "auth_records": ["claudeAiOauth"],
         "format_version": 1,
         "model": "claude-sonnet-5",
     }
+    assert isinstance(manifest["claude_login_sha256"], str)
+    assert len(manifest["claude_login_sha256"]) == 64
 
 
 def test_provision_refuses_existing_target_without_overwriting_it(tmp_path: Path) -> None:
@@ -270,6 +273,24 @@ def test_fresh_run_rejects_tampered_or_symlinked_credential_baseline(tmp_path: P
         pytest.fail("symlinked baseline must not create a run")
 
 
+def test_fresh_run_rejects_replacement_with_a_different_valid_claude_login(
+    tmp_path: Path,
+) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    profile = provision_profile(_profile_path(), source)
+    profile.baseline_credentials.write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": "different-but-valid", "expiresAt": 456}}),
+        encoding="utf-8",
+    )
+    profile.baseline_credentials.chmod(0o600)
+
+    with pytest.raises(ClaudeE2EProfileError, match="does not match its profile"), create_fresh_run(
+        profile.root
+    ):
+        pytest.fail("replaced valid login must not create a run")
+
+
 def test_run_is_removed_when_caller_raises(tmp_path: Path) -> None:
     source = _source_path(tmp_path)
     _credentials(source)
@@ -289,16 +310,22 @@ def test_provision_does_not_remove_directory_created_by_another_operation(
     source = _source_path(tmp_path)
     _credentials(source)
     target = _profile_path()
-    original_mkdir = profile_module._mkdir_private
+    original_mkdir = Path.mkdir
 
-    def another_operation_creates(path: Path) -> None:
-        if path == target:
-            path.mkdir(parents=True)
-            (path / "belongs-to-someone-else").write_text("keep", encoding="utf-8")
-            raise FileExistsError(path)
-        original_mkdir(path)
+    def another_operation_creates(
+        path: Path,
+        mode: int = 0o777,
+        parents: bool = False,
+        exist_ok: bool = False,
+    ) -> None:
+        if path != target:
+            original_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+            return
+        original_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+        (path / "belongs-to-someone-else").write_text("keep", encoding="utf-8")
+        raise FileExistsError(path)
 
-    monkeypatch.setattr(profile_module, "_mkdir_private", another_operation_creates)
+    monkeypatch.setattr(Path, "mkdir", another_operation_creates)
 
     with pytest.raises(ClaudeE2EProfileError, match="already exists"):
         provision_profile(target, source)
@@ -318,5 +345,4 @@ def test_provision_rejects_profile_when_private_modes_cannot_be_observed(
     ), pytest.raises(ClaudeE2EProfileError, match="Linux filesystem"):
         provision_profile(target, source)
 
-    assert target.exists()
-    assert not (target / profile_module._OWNER_MARKER_NAME).exists()
+    assert not target.exists()

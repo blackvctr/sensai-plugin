@@ -8,6 +8,7 @@ with the returned environment.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import secrets
@@ -160,6 +161,13 @@ def _minimal_credentials(source: Path) -> bytes:
     return (json.dumps(minimal, sort_keys=True) + "\n").encode()
 
 
+def _profile_manifest(credentials: bytes) -> dict[str, object]:
+    return {
+        **_MANIFEST,
+        "claude_login_sha256": hashlib.sha256(credentials).hexdigest(),
+    }
+
+
 def discover_current_credentials() -> Path:
     """Return the one configured Claude credential file without trying alternatives.
 
@@ -237,6 +245,15 @@ def _has_owner_marker(profile: Path, nonce: str) -> bool:
         return False
 
 
+def _is_empty_owned_directory(root: Path, expected_identity: tuple[int, int]) -> bool:
+    try:
+        if _directory_identity(root) != expected_identity:
+            return False
+        return not any(root.iterdir())
+    except (ClaudeE2EProfileError, OSError):
+        return False
+
+
 @contextmanager
 def _profile_lock(profile: Path) -> Iterator[None]:
     lock_path = profile / ".operation.lock"
@@ -288,12 +305,14 @@ def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfi
     owner_nonce: str | None = None
     try:
         try:
-            _mkdir_private(root)
+            root.mkdir(mode=0o700)
         except FileExistsError as error:
             raise ClaudeE2EProfileError("persistent profile already exists") from error
         created_identity = _directory_identity(root)
         owner_nonce = secrets.token_hex(32)
         _write_private(root / _OWNER_MARKER_NAME, _owner_marker(owner_nonce))
+        root.chmod(0o700)
+        _assert_observed_mode(root, 0o700)
         with _profile_lock(root):
             baseline = root / "baseline"
             config = baseline / "config"
@@ -303,13 +322,15 @@ def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfi
             _write_private(config / ".credentials.json", credentials)
             _write_private(
                 root / "manifest.json",
-                (json.dumps(_MANIFEST, sort_keys=True) + "\n").encode(),
+                (json.dumps(_profile_manifest(credentials), sort_keys=True) + "\n").encode(),
             )
     except BaseException:
         if (
             created_identity is not None
-            and owner_nonce is not None
-            and _has_owner_marker(root, owner_nonce)
+            and (
+                (owner_nonce is not None and _has_owner_marker(root, owner_nonce))
+                or _is_empty_owned_directory(root, created_identity)
+            )
         ):
             _remove_owned_tree(root, created_identity)
         raise
@@ -330,7 +351,17 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
         value = json.loads(_read_regular_bytes(manifest))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ClaudeE2EProfileError("persistent profile manifest is invalid") from error
-    if value != _MANIFEST:
+    if not isinstance(value, dict):
+        raise ClaudeE2EProfileError("persistent profile manifest is not recognized")
+    expected_manifest_fields = set(_MANIFEST) | {"claude_login_sha256"}
+    digest = value.get("claude_login_sha256")
+    if (
+        set(value) != expected_manifest_fields
+        or {key: value[key] for key in _MANIFEST} != _MANIFEST
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
         raise ClaudeE2EProfileError("persistent profile manifest is not recognized")
     result = ClaudeE2EProfile(root)
     try:
@@ -345,7 +376,9 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
     ):
         raise ClaudeE2EProfileError("persistent profile ownership marker is not recognized")
     _assert_observed_mode(result.owner_marker, 0o600)
-    _load_baseline_credentials(result.baseline_credentials)
+    credentials = _load_baseline_credentials(result.baseline_credentials)
+    if hashlib.sha256(credentials).hexdigest() != digest:
+        raise ClaudeE2EProfileError("persistent Claude login record does not match its profile")
     runs = root / "runs"
     try:
         runs_stat = os.lstat(runs)

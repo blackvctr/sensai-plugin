@@ -14,6 +14,11 @@ contains a Claude login. It writes only that login into its own profile. It does
 not copy Claude settings, conversation history, plugins, marketplace state,
 browser data, or MCP/Sensai authorization.
 
+At provisioning time, protected local metadata records a one-way fingerprint of
+the exact minimal login record. Before every fresh test run, the fingerprint
+must still match. A different but structurally valid login record is therefore
+rejected rather than silently becoming the identity used by the test.
+
 The target profile must be outside the development directory, separate from the
 chosen source Claude profile, and must not already exist. The only accepted
 location is under the local Linux home share directory, for example
