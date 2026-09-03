@@ -78,7 +78,6 @@ _INITIAL_DISCOVERY_REPLY = (
     "и повторяющиеся рабочие задачи, затем передай мне ответы. Так рекомендации будут полезны "
     "именно для его работы."
 )
-_TELEGRAM_BODY_PATH = Path(__file__).resolve().parents[3] / "server" / "knowledge-base" / "connectors" / "telegram.md"
 
 
 class ProductionE2EError(RuntimeError):
@@ -225,6 +224,10 @@ class ClaudeDriver(Protocol):
         timeout_seconds: int,
     ) -> bool: ...
 
+    def public_sensai_plugin_installed(
+        self, command: Sequence[str], *, cwd: Path, environment: dict[str, str], timeout_seconds: int
+    ) -> bool: ...
+
     def claude_authenticated(
         self,
         command: Sequence[str],
@@ -352,6 +355,33 @@ class SubprocessClaudeDriver:
             return False
         return isinstance(status, dict) and status.get("loggedIn") is True
 
+    def public_sensai_plugin_installed(
+        self, command: Sequence[str], *, cwd: Path, environment: dict[str, str], timeout_seconds: int
+    ) -> bool:
+        try:
+            completed = subprocess.run(
+                list(command), cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout_seconds, check=False,
+            )
+            entries = json.loads(completed.stdout.decode("utf-8"))
+        except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return _is_exact_public_sensai_inventory(entries)
+
+
+def _is_exact_public_sensai_inventory(entries: object) -> bool:
+    """Accept one enabled public Sensai plugin and reject every stale Sensai duplicate."""
+
+    if not isinstance(entries, list) or not all(isinstance(item, dict) for item in entries):
+        return False
+    sensai = [item for item in entries if str(item.get("id", "")).startswith("sensai@")]
+    return (
+        len(sensai) == 1
+        and sensai[0].get("id") == "sensai@sensai"
+        and sensai[0].get("scope") == "user"
+        and sensai[0].get("enabled") is True
+    )
+
 
 @dataclass(slots=True)
 class _TextAccumulator:
@@ -443,27 +473,14 @@ def _new_tool_accumulator(block: object) -> _ToolAccumulator:
 
 
 def _telegram_body() -> str | None:
-    try:
-        body = _TELEGRAM_BODY_PATH.read_text(encoding="utf-8")
-        manifest = json.loads(
-            (_TELEGRAM_BODY_PATH.parents[2] / "deploy" / "knowledge-base-manifest.json").read_text(
-                encoding="utf-8"
-            )
-        )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    entries = manifest.get("entries") if isinstance(manifest, dict) else None
-    if not isinstance(entries, list):
-        return None
-    expected = next(
-        (
-            item.get("body_sha256")
-            for item in entries
-            if isinstance(item, dict) and item.get("id") == "telegram" and item.get("path") == "connectors/telegram.md"
-        ),
-        None,
-    )
-    return body if expected == hashlib.sha256(body.encode("utf-8")).hexdigest() else None
+    """Exact production article proof needs response-time server provenance.
+
+    Drive content and the active snapshot can move independently, so neither a
+    local article nor a later snapshot can prove what was delivered.  Keep the
+    value unavailable until the server returns pinned response provenance.
+    """
+
+    return None
 
 
 def _sensai_reply_kind(content: object) -> SensaiReplyKind:
@@ -733,6 +750,10 @@ def _auth_status_command(executable: str) -> tuple[str, ...]:
     return (executable, "auth", "status")
 
 
+def _plugin_list_command(executable: str) -> tuple[str, ...]:
+    return (executable, "plugin", "list", "--json")
+
+
 class ProductionSensaiE2E:
     """One explicit production check using a local disposable Claude run."""
 
@@ -820,6 +841,11 @@ class ProductionSensaiE2E:
                 timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
             ):
                 raise ProductionE2EError("sensai_connection_not_verified")
+            if not self._driver.public_sensai_plugin_installed(
+                _plugin_list_command(executable), cwd=run.work, environment=run.environment,
+                timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
+            ):
+                raise ProductionE2EError("public_sensai_plugin_not_verified")
             telegram_start = self._driver.run_agent(
                 _agent_command(
                     executable,

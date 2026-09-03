@@ -25,6 +25,7 @@ from sensai_plugin.claude_production_e2e import (
     ToolKind,
     _assert_normal_browser_path,
     _classify_bash_command,
+    _is_exact_public_sensai_inventory,
     _consume_stream,
 )
 
@@ -158,6 +159,17 @@ class _FakeDriver(ClaudeDriver):
         self.calls.append(_Call(tuple(command), cwd, dict(environment), timeout_seconds, None, None))
         return True
 
+    def public_sensai_plugin_installed(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        timeout_seconds: int,
+    ) -> bool:
+        self.calls.append(_Call(tuple(command), cwd, dict(environment), timeout_seconds, None, None))
+        return True
+
 
 def _successful_driver() -> _FakeDriver:
     return _FakeDriver(
@@ -170,7 +182,7 @@ def _successful_driver() -> _FakeDriver:
                 texts=(_text(expected=True), _text(expected=True)),
             ),
             _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.INITIAL_DISCOVERY),
-            _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.TELEGRAM_COMPOSED),
+            _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.OTHER),
             _evidence(ToolKind.FORGET_ME),
         )
     )
@@ -186,11 +198,10 @@ def test_production_route_uses_public_input_production_model_and_resumed_telegra
     driver = _successful_driver()
     profile = _profile(tmp_path)
 
-    report = _runner(profile, driver).run()
-
-    assert report.forget_me_completed
-    assert len(driver.calls) == 6
-    auth_status, installation, status, telegram_start, continuation, cleanup = driver.calls
+    with pytest.raises(ProductionE2EError, match="telegram_continuation_reply_body_unavailable"):
+        _runner(profile, driver).run()
+    assert len(driver.calls) == 7
+    auth_status, installation, status, plugin_list, telegram_start, continuation, cleanup = driver.calls
     assert auth_status.command == ("claude", "auth", "status")
     assert installation.command[0:2] == ("claude", "-p")
     assert _argument(installation.command, "--model") == "claude-sonnet-5"
@@ -200,6 +211,7 @@ def test_production_route_uses_public_input_production_model_and_resumed_telegra
     assert installation.expected_visible_messages is not None
     assert installation.command[-1].startswith("Установи Sensai ")
     assert status.command == ("claude", "mcp", "get", "plugin:sensai:sensai")
+    assert plugin_list.command == ("claude", "plugin", "list", "--json")
     assert "--session-id" in telegram_start.command
     assert "--resume" in continuation.command
     assert _argument(telegram_start.command, "--session-id") == _argument(
@@ -223,11 +235,9 @@ def test_report_and_persistent_profile_contain_no_prompt_stream_or_oauth_materia
     driver = _successful_driver()
     profile = _profile(tmp_path)
 
-    report = _runner(profile, driver).run()
+    with pytest.raises(ProductionE2EError, match="telegram_continuation_reply_body_unavailable"):
+        _runner(profile, driver).run()
 
-    rendered = repr(report)
-    for forbidden in ("Установи", "Telegram", "private-token", "oauth", "session"):
-        assert forbidden not in rendered
     assert not list((profile / "runs").iterdir())
     persistent_text = "\n".join(
         path.read_text(encoding="utf-8")
@@ -267,6 +277,30 @@ def test_bash_evidence_requires_real_command_semantics_and_rejects_no_browser() 
     )
     assert _classify_bash_command(f"xdg-open '{uri}'", uri) is ToolKind.NEW_CHAT_URI
     assert _classify_bash_command("claude mcp login --no-browser", uri) is ToolKind.FORBIDDEN_BROWSER_MODE
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        ([{"id": "sensai@sensai", "scope": "user", "enabled": True}], True),
+        ([], False),
+        ([{"id": "sensai@sensai-local", "scope": "user", "enabled": True}], False),
+        ([{"id": "sensai@sensai", "scope": "project", "enabled": True}], False),
+        ([{"id": "sensai@sensai", "scope": "user", "enabled": False}], False),
+        (
+            [
+                {"id": "sensai@sensai", "scope": "user", "enabled": True},
+                {"id": "sensai@stale", "scope": "user", "enabled": True},
+            ],
+            False,
+        ),
+        ({"id": "sensai@sensai"}, False),
+    ],
+)
+def test_public_plugin_inventory_rejects_absent_wrong_and_duplicate_entries(
+    entries: object, expected: bool
+) -> None:
+    assert _is_exact_public_sensai_inventory(entries) is expected
 
 
 def test_real_driver_reduces_a_claude_launch_error_to_a_safe_category(
@@ -331,7 +365,7 @@ def test_failed_telegram_turn_still_calls_forget_me_before_temporary_profile_is_
     with pytest.raises(ProductionE2EError, match="telegram_start_tool_result_invalid"):
         _runner(profile, driver).run()
 
-    assert len(driver.calls) == 5
+    assert len(driver.calls) == 6
     assert driver.calls[-1].command[-1].startswith("Заверши проверку")
     assert not list((profile / "runs").iterdir())
 
@@ -347,13 +381,13 @@ def test_cleanup_failure_is_reported_and_temporary_profile_is_still_deleted(tmp_
                 texts=(_text(expected=True), _text(expected=True)),
             ),
             _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.INITIAL_DISCOVERY),
-            _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.TELEGRAM_COMPOSED),
+            _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.OTHER),
             _evidence(ToolKind.OTHER),
         )
     )
     profile = _profile(tmp_path)
 
-    with pytest.raises(ProductionE2EError, match="forget_me_tool_result_invalid"):
+    with pytest.raises(ProductionE2EError, match="telegram_continuation_reply_body_unavailable"):
         _runner(profile, driver).run()
 
     assert not list((profile / "runs").iterdir())
