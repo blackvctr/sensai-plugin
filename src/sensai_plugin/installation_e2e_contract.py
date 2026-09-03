@@ -1,38 +1,41 @@
-"""Deterministic acceptance rules for a recorded Claude installation run.
+"""Deterministic evaluator for an observed Claude installation transcript.
 
-The eventual E2E runner is responsible for running Claude, observing the
-browser, and producing the small transcript below.  This module deliberately
-does none of those things: it turns that transcript into reproducible pass or
-fail evidence without retaining credentials or conversation text outside the
-two visible Claude messages needed for the check.
+This is deliberately not an E2E test.  A future runner must actually run
+Claude, observe the local browser, and record the closed event sequence below.
+This module only turns that observed sequence into reproducible pass/fail
+evidence.  It never launches Claude, reads a browser profile, starts OAuth, or
+contacts Sensai.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
 from unicodedata import category, name
 from urllib.parse import parse_qsl, urlsplit
 
-PUBLIC_RUSSIAN_INSTALL_PROMPT = (
-    "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
-    "sensai-plugin/main/README.md"
-)
 REQUIRED_CLAUDE_MODEL = "claude-sonnet-5"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+README_PATH = REPOSITORY_ROOT / "README.md"
 
-VisibleMessagePhase = Literal["authorization", "ready"]
+
+@dataclass(frozen=True, slots=True)
+class PublicReadmeContract:
+    """The two executable Russian values published in the current README."""
+
+    russian_install_prompt: str
+    russian_new_chat_request: str
 
 
 @dataclass(frozen=True, slots=True)
 class ClaudeVisibleMessage:
     """One complete Claude message shown to the person during installation.
 
-    ``phase`` is supplied by the runner from the observed installation stage;
-    it is not inferred from the prose.  This keeps the evaluator deterministic
-    and avoids pretending that a word search understands a person's request.
+    The position in the closed event sequence gives it its role.  The runner
+    cannot turn an arbitrary message into an authorization or readiness
+    message simply by attaching a label.
     """
 
-    phase: VisibleMessagePhase
     text: str
 
 
@@ -70,7 +73,7 @@ type InstallationEvent = (
 
 
 @dataclass(frozen=True, slots=True)
-class InstallationE2ETranscript:
+class InstallationTranscript:
     """Closed, redacted evidence from one installation attempt.
 
     The public request is recorded exactly because it is the entry point the
@@ -84,7 +87,7 @@ class InstallationE2ETranscript:
 
 
 @dataclass(frozen=True, slots=True)
-class InstallationE2EReport:
+class InstallationTranscriptReport:
     """Deterministic result with machine-readable failure categories."""
 
     failures: tuple[str, ...]
@@ -94,24 +97,30 @@ class InstallationE2EReport:
         return not self.failures
 
 
-def evaluate_installation_e2e(transcript: InstallationE2ETranscript) -> InstallationE2EReport:
-    """Validate the observable contract for the production installation E2E.
+def evaluate_installation_transcript(
+    transcript: InstallationTranscript,
+) -> InstallationTranscriptReport:
+    """Validate the observable contract that a real E2E runner must provide.
 
     The decisive event sequence is intentionally short and closed:
 
-    1. one Russian authorization message;
+    1. one user-directed message before Google consent;
     2. one real Google login start and completion;
     3. a successful Sensai connection observation;
-    4. one Russian ready message; and
-    5. one well-formed Russian ``claude://code/new`` URI attempt.
+    4. one user-directed ready message; and
+    5. one ``claude://code/new`` URI whose request exactly matches README.
 
-    It does not prescribe either Russian sentence.  README specifies their
-    purpose, not exact prose, so forcing a sentence here would make the test
-    brittle for no product reason.
+    Current README gives the purposes of the two messages but not their exact
+    Russian text.  Unicode letters can prove that a message is predominantly
+    Russian; they cannot prove that arbitrary Russian prose avoids manual
+    terminal/software instructions.  Until README publishes both canonical
+    messages, this evaluator deliberately reports that missing contract rather
+    than claiming content safety from a word search.
     """
 
     failures: list[str] = []
-    if transcript.public_prompt != PUBLIC_RUSSIAN_INSTALL_PROMPT:
+    public_contract = _load_public_readme_contract()
+    if transcript.public_prompt != public_contract.russian_install_prompt:
         failures.append("public_prompt_not_exact")
     if transcript.model != REQUIRED_CLAUDE_MODEL:
         failures.append("wrong_claude_model")
@@ -127,8 +136,12 @@ def evaluate_installation_e2e(transcript: InstallationE2ETranscript) -> Installa
     actual_event_types = tuple(type(event) for event in transcript.events)
     if actual_event_types != expected_event_types:
         failures.append("unsafe_event_order")
-        _record_additional_event_failures(transcript.events, failures)
-        return InstallationE2EReport(tuple(failures))
+        _record_additional_event_failures(
+            transcript.events,
+            failures,
+            russian_new_chat_request=public_contract.russian_new_chat_request,
+        )
+        return InstallationTranscriptReport(tuple(failures))
 
     authorization, _, _, connection, ready, chat_uri = transcript.events
     assert isinstance(authorization, ClaudeVisibleMessage)
@@ -136,21 +149,20 @@ def evaluate_installation_e2e(transcript: InstallationE2ETranscript) -> Installa
     assert isinstance(ready, ClaudeVisibleMessage)
     assert isinstance(chat_uri, ClaudeNewChatUriAttempt)
 
-    if authorization.phase != "authorization" or ready.phase != "ready":
-        failures.append("unsafe_event_order")
     for message in (authorization, ready):
         if not _is_predominantly_cyrillic(message.text):
-            failures.append(f"{message.phase}_message_not_russian")
+            failures.append("visible_message_not_russian")
     if not connection.connected:
         failures.append("sensai_connection_not_verified")
-    if not _is_valid_russian_new_chat_uri(chat_uri.uri):
+    if not _is_valid_new_chat_uri(chat_uri.uri, public_contract.russian_new_chat_request):
         failures.append("wrong_new_chat_uri")
+    failures.append("readme_canonical_visible_messages_missing")
 
-    return InstallationE2EReport(tuple(failures))
+    return InstallationTranscriptReport(tuple(failures))
 
 
 def _record_additional_event_failures(
-    events: tuple[InstallationEvent, ...], failures: list[str]
+    events: tuple[InstallationEvent, ...], failures: list[str], *, russian_new_chat_request: str
 ) -> None:
     """Preserve concrete missing/duplicate evidence beside an order failure."""
 
@@ -164,8 +176,57 @@ def _record_additional_event_failures(
     if len(connections) != 1 or not connections[0].connected:
         failures.append("sensai_connection_not_verified")
     uri_attempts = [event for event in events if isinstance(event, ClaudeNewChatUriAttempt)]
-    if len(uri_attempts) != 1 or not _is_valid_russian_new_chat_uri(uri_attempts[0].uri):
+    if len(uri_attempts) != 1 or not _is_valid_new_chat_uri(
+        uri_attempts[0].uri, russian_new_chat_request
+    ):
         failures.append("wrong_new_chat_uri")
+
+
+def _load_public_readme_contract() -> PublicReadmeContract:
+    """Read the public Russian entry points instead of maintaining copies."""
+
+    return _public_contract_from_markdown(README_PATH.read_text(encoding="utf-8"))
+
+
+def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
+    """Extract exactly the Russian install prompt and new-chat request from README."""
+
+    lines = markdown.splitlines()
+    try:
+        russian_heading = lines.index("Russian:")
+    except ValueError as error:
+        raise ValueError("README has no Russian installation prompt heading") from error
+
+    prompt_fence = russian_heading + 1
+    while prompt_fence < len(lines) and not lines[prompt_fence].strip():
+        prompt_fence += 1
+    if prompt_fence >= len(lines) or lines[prompt_fence] != "```text":
+        raise ValueError("README Russian installation prompt is not a text code block")
+    prompt_end = prompt_fence + 1
+    while prompt_end < len(lines) and lines[prompt_end] != "```":
+        prompt_end += 1
+    prompt_lines = lines[prompt_fence + 1 : prompt_end]
+    if prompt_end == len(lines) or len(prompt_lines) != 1 or not prompt_lines[0].strip():
+        raise ValueError("README Russian installation prompt must be exactly one nonempty line")
+
+    russian_link = next(
+        (line for line in lines if line.startswith("- Russian: [")),
+        None,
+    )
+    if russian_link is None:
+        raise ValueError("README has no Russian Claude new-chat link")
+    link_body = russian_link.removeprefix("- Russian: [")
+    visible_request, separator, uri_tail = link_body.partition("](")
+    if not separator or not uri_tail.endswith(")"):
+        raise ValueError("README Russian Claude new-chat link is malformed")
+    uri_request = _new_chat_request(uri_tail[:-1])
+    if uri_request is None or visible_request != uri_request:
+        raise ValueError("README Russian Claude new-chat link does not encode its visible request")
+
+    return PublicReadmeContract(
+        russian_install_prompt=prompt_lines[0],
+        russian_new_chat_request=uri_request,
+    )
 
 
 def _is_predominantly_cyrillic(text: str) -> bool:
@@ -189,8 +250,20 @@ def _is_predominantly_cyrillic(text: str) -> bool:
     return cyrillic > latin and cyrillic > 0
 
 
-def _is_valid_russian_new_chat_uri(uri: str) -> bool:
-    """Accept one ordinary Russian Claude new-chat request, never a command."""
+def _is_valid_new_chat_uri(uri: str, expected_request: str) -> bool:
+    """Accept only the exact ordinary Russian request published in README."""
+
+    request = _new_chat_request(uri)
+    return (
+        request is not None
+        and request == expected_request
+        and not request.startswith("/")
+        and _is_predominantly_cyrillic(request)
+    )
+
+
+def _new_chat_request(uri: str) -> str | None:
+    """Decode one syntactically valid Claude new-chat URI."""
 
     parsed = urlsplit(uri)
     if (
@@ -199,12 +272,12 @@ def _is_valid_russian_new_chat_uri(uri: str) -> bool:
         or parsed.path != "/new"
         or parsed.fragment
     ):
-        return False
+        return None
     try:
         parameters = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
     except ValueError:
-        return False
+        return None
     if len(parameters) != 1 or parameters[0][0] != "q":
-        return False
+        return None
     request = parameters[0][1].strip()
-    return bool(request) and not request.startswith("/") and _is_predominantly_cyrillic(request)
+    return request or None
