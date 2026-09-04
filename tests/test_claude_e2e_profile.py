@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -189,6 +191,7 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
             "TMPDIR",
             "TMP",
             "TEMP",
+            "BROWSER",
         )
     }
 
@@ -198,6 +201,16 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
         assert run.work == run.root / "work"
         assert run.work.is_dir() and not list(run.work.iterdir())
         assert run.work.stat().st_mode & 0o777 == 0o700
+        assert run.firefox_opener == run.root / "open-in-windows-firefox.py"
+        assert run.firefox_open_marker == run.root / "windows-firefox-open-requested"
+        assert run.firefox_opener.is_file()
+        assert run.firefox_opener.stat().st_mode & 0o777 == 0o700
+        assert not run.firefox_open_marker.exists()
+        assert run.environment["BROWSER"] == str(run.firefox_opener)
+        assert run.environment["BROWSER"] != old_env["BROWSER"]
+        opener_source = run.firefox_opener.read_text(encoding="utf-8")
+        assert "FIREFOX_EXECUTABLE = '/mnt/c/Program Files/Mozilla Firefox/firefox.exe'" in opener_source
+        assert "os.execv(FIREFOX_EXECUTABLE, (FIREFOX_EXECUTABLE, raw_url))" in opener_source
         copied = json.loads(
             (run.root / "config" / ".credentials.json").read_text(encoding="utf-8")
         )
@@ -232,6 +245,40 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
 
     assert not run.root.exists()
     assert not list((profile.root / "runs").iterdir())
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        [],
+        ["https://example.com", "unexpected"],
+        ["file:///etc/passwd"],
+        ["javascript:alert(1)"],
+        ["https://"],
+        ["https://person@example.com/"],
+        ["https://example.com/\nsecond-line"],
+    ],
+)
+def test_disposable_firefox_opener_rejects_unsafe_arguments_before_browser_launch(
+    tmp_path: Path, arguments: list[str]
+) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    profile = provision_profile(_profile_path(), source)
+
+    with create_fresh_run(profile.root) as run:
+        completed = subprocess.run(
+            [sys.executable, str(run.firefox_opener), *arguments],
+            cwd=run.root,
+            env={"PATH": os.environ["PATH"]},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+        assert completed.returncode == 64
+        assert not run.firefox_open_marker.exists()
 
 
 def test_fresh_run_rejects_tampered_persistent_profile(tmp_path: Path) -> None:

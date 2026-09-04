@@ -33,6 +33,9 @@ DEVELOPMENT_ROOT = REPOSITORY_ROOT.parents[1]
 CLAUDE_E2E_MODEL = CLAUDE_SONNET_5_MODEL
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
 _OWNER_MARKER_NAME = ".sensai-e2e-owner.json"
+_FIREFOX_OPENER_NAME = "open-in-windows-firefox.py"
+_FIREFOX_OPEN_MARKER_NAME = "windows-firefox-open-requested"
+_WINDOWS_FIREFOX_EXECUTABLE = "/mnt/c/Program Files/Mozilla Firefox/firefox.exe"
 _MANIFEST = {
     "auth_records": ["claudeAiOauth"],
     "format_version": 1,
@@ -90,6 +93,8 @@ class ClaudeE2ERun:
     root: Path
     work: Path
     environment: dict[str, str]
+    firefox_opener: Path
+    firefox_open_marker: Path
     model: str = CLAUDE_E2E_MODEL
 
 
@@ -219,6 +224,23 @@ def _write_private(path: Path, content: bytes) -> None:
         raise
     path.chmod(0o600)
     _assert_observed_mode(path, 0o600)
+
+
+def _write_private_executable(path: Path, content: bytes) -> None:
+    """Create one owned executable without inheriting any host launcher."""
+
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        with suppress(OSError):
+            path.unlink()
+        raise
+    path.chmod(0o700)
+    _assert_observed_mode(path, 0o700)
 
 
 def _assert_observed_mode(path: Path, expected: int) -> None:
@@ -412,7 +434,56 @@ def _load_baseline_credentials(path: Path) -> bytes:
     return (json.dumps(value, sort_keys=True) + "\n").encode()
 
 
-def _run_environment(root: Path) -> dict[str, str]:
+def _firefox_opener_source(marker: Path) -> bytes:
+    """Return the one-purpose browser handoff kept inside a disposable run."""
+
+    return f'''#!/usr/bin/python3
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+FIREFOX_EXECUTABLE = {_WINDOWS_FIREFOX_EXECUTABLE!r}
+MARKER = Path({str(marker)!r})
+MAX_URL_BYTES = 16 * 1024
+
+
+def reject() -> None:
+    raise SystemExit(64)
+
+
+if len(sys.argv) != 2:
+    reject()
+raw_url = sys.argv[1]
+try:
+    encoded_url = raw_url.encode("utf-8", errors="strict")
+    parsed = urlsplit(raw_url)
+except (UnicodeError, ValueError):
+    reject()
+if (
+    not raw_url
+    or len(encoded_url) > MAX_URL_BYTES
+    or any(ord(character) < 32 or ord(character) == 127 for character in raw_url)
+    or parsed.scheme not in {{"http", "https"}}
+    or not parsed.netloc
+    or parsed.username is not None
+    or parsed.password is not None
+):
+    reject()
+
+descriptor = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "wb") as output:
+    output.write(b"opened\\n")
+    output.flush()
+    os.fsync(output.fileno())
+MARKER.chmod(0o600)
+os.execv(FIREFOX_EXECUTABLE, (FIREFOX_EXECUTABLE, raw_url))
+'''.encode("utf-8")
+
+
+def _run_environment(root: Path, firefox_opener: Path) -> dict[str, str]:
     locations = {
         "CLAUDE_CONFIG_DIR": root / "config",
         "CLAUDE_CODE_PLUGIN_CACHE_DIR": root / "plugin-cache",
@@ -432,6 +503,10 @@ def _run_environment(root: Path) -> dict[str, str]:
         name: os.environ[name] for name in _PASSTHROUGH_ENVIRONMENT_NAMES if name in os.environ
     }
     environment.update({name: str(location) for name, location in locations.items()})
+    # The run never inherits BROWSER.  This private helper routes only this OAuth
+    # request to the existing Windows Firefox profile without copying its state or
+    # changing the Windows default browser.
+    environment["BROWSER"] = str(firefox_opener)
     environment["DISABLE_AUTOUPDATER"] = "1"
     return environment
 
@@ -451,12 +526,21 @@ def create_fresh_run(profile: Path) -> Iterator[ClaudeE2ERun]:
             _mkdir_private(work)
             if any(work.iterdir()):
                 raise ClaudeE2EProfileError("fresh Claude E2E working directory is not empty")
-            environment = _run_environment(run_root)
+            firefox_opener = run_root / _FIREFOX_OPENER_NAME
+            firefox_open_marker = run_root / _FIREFOX_OPEN_MARKER_NAME
+            _write_private_executable(firefox_opener, _firefox_opener_source(firefox_open_marker))
+            environment = _run_environment(run_root, firefox_opener)
             _write_private(
                 Path(environment["CLAUDE_CONFIG_DIR"]) / ".credentials.json",
                 _load_baseline_credentials(persistent.baseline_credentials),
             )
-            yield ClaudeE2ERun(run_root, work, environment)
+            yield ClaudeE2ERun(
+                run_root,
+                work,
+                environment,
+                firefox_opener,
+                firefox_open_marker,
+            )
         finally:
             _remove_owned_tree(run_root, run_identity)
 
