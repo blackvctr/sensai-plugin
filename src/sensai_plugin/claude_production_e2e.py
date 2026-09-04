@@ -36,7 +36,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Protocol
@@ -62,6 +62,10 @@ MAX_STREAM_BYTES = 2 * 1024 * 1024
 MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
+_OPERATOR_PROOF_SCHEMA = "sensai-local-e2e-proof-v1"
+_OPERATOR_CONFIG_SCHEMA = "sensai-local-e2e-ssh-v1"
+_OPERATOR_CONFIG = Path.home() / ".config" / "sensai" / "local-e2e-proof-ssh.json"
+_REMOTE_PROOF_COMMAND = "/opt/sensai/bin/sensai_local_e2e_proof.py"
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
@@ -165,6 +169,7 @@ class ToolResultEvidence:
     kind: ToolKind
     succeeded: bool
     sensai_reply: SensaiReplyKind | None
+    reply_text: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +192,50 @@ class AgentEvidence:
             self.tool_calls.count(kind) == exactly
             and self.successful_tool_results.count(kind) == exactly
         )
+
+    def successful_reply(self, kind: ToolKind) -> str | None:
+        matches = [item.reply_text for item in self.tool_results if item.kind is kind and item.succeeded]
+        return matches[0] if len(matches) == 1 and isinstance(matches[0], str) else None
+
+
+class OperatorProofVerifier(Protocol):
+    def verifies(self, response: str) -> bool: ...
+
+
+class SshOperatorProofVerifier:
+    """One fixed SSH proof call; neither response nor target is ever logged."""
+
+    def verifies(self, response: str) -> bool:
+        try:
+            config = json.loads(_OPERATOR_CONFIG.read_text(encoding="utf-8"))
+            mode = _OPERATOR_CONFIG.stat().st_mode & 0o777
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        if (
+            not isinstance(config, dict)
+            or set(config) != {"schema", "host", "known_hosts"}
+            or config.get("schema") != _OPERATOR_CONFIG_SCHEMA
+            or not isinstance(config.get("host"), str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", config["host"])
+            or not isinstance(config.get("known_hosts"), str)
+            or mode != 0o600
+        ):
+            return False
+        known_hosts = Path(config["known_hosts"])
+        if not known_hosts.is_absolute() or not known_hosts.is_file():
+            return False
+        payload = json.dumps(
+            {"schema": _OPERATOR_PROOF_SCHEMA, "response_sha256": hashlib.sha256(response.encode()).hexdigest()},
+            separators=(",", ":"),
+        ).encode() + b"\n"
+        try:
+            completed = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}", config["host"], _REMOTE_PROOF_COMMAND],
+                input=payload, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0 and completed.stdout == b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,8 +563,9 @@ def _tool_results(record: object, outstanding: dict[bytes, ToolKind]) -> list[To
         key = _safe_tool_result_key(block.get("tool_use_id"))
         kind = outstanding.pop(key, ToolKind.OTHER) if key is not None else ToolKind.OTHER
         succeeded = block.get("is_error") is not True
-        reply = _sensai_reply_kind(block.get("content")) if kind is ToolKind.TELL_SENSAI else None
-        results.append(ToolResultEvidence(kind, succeeded, reply))
+        reply_text = block.get("content") if kind is ToolKind.TELL_SENSAI and isinstance(block.get("content"), str) else None
+        reply = _sensai_reply_kind(reply_text) if kind is ToolKind.TELL_SENSAI else None
+        results.append(ToolResultEvidence(kind, succeeded, reply, reply_text))
     return results
 
 
@@ -766,11 +816,13 @@ class ProductionSensaiE2E:
         driver: ClaudeDriver | None = None,
         contract_loader: Callable[[], PublicReadmeContract] = fetch_public_readme_contract,
         executable_resolver: Callable[[], str] = resolve_installed_wsl_claude,
+        operator_proof: OperatorProofVerifier | None = None,
     ) -> None:
         self._profile = profile
         self._driver = driver or SubprocessClaudeDriver()
         self._contract_loader = contract_loader
         self._executable_resolver = executable_resolver
+        self._operator_proof = operator_proof or SshOperatorProofVerifier()
 
     def run(self) -> ProductionE2EReport:
         """Install, authenticate, consult Telegram, forget, then remove local state."""
@@ -883,8 +935,11 @@ class ProductionSensaiE2E:
                 telegram_continuation,
                 ToolKind.TELL_SENSAI,
                 "telegram_continuation",
-                SensaiReplyKind.TELEGRAM_COMPOSED,
+                None,
             )
+            response = telegram_continuation.successful_reply(ToolKind.TELL_SENSAI)
+            if response is None or not self._operator_proof.verifies(response):
+                raise ProductionE2EError("telegram_operator_proof_not_verified")
         except ProductionE2EError as error:
             primary_error = error
         finally:

@@ -19,6 +19,7 @@ from sensai_plugin.claude_production_e2e import (
     ProductionE2EError,
     ProductionSensaiE2E,
     SensaiReplyKind,
+    SshOperatorProofVerifier,
     SubprocessClaudeDriver,
     TextEvidence,
     ToolResultEvidence,
@@ -93,6 +94,40 @@ def test_public_readme_fetch_uses_exact_url_and_rejects_redirect(
     )
     with pytest.raises(ProductionE2EError, match="public_readme_redirected"):
         fetch_public_readme_contract()
+
+
+def test_operator_proof_sends_only_hash_and_accepts_only_exact_verified_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "operator.json"
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("host key\n", encoding="utf-8")
+    config.write_text(
+        json.dumps({"schema": "sensai-local-e2e-ssh-v1", "host": "proof.example", "known_hosts": str(known_hosts)}),
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setattr(production_module, "_OPERATOR_CONFIG", config)
+    seen: dict[str, object] = {}
+
+    def ssh(argv: list[str], **kwargs: object) -> object:
+        seen["argv"] = argv
+        seen["input"] = kwargs["input"]
+        return type("Completed", (), {"returncode": 0, "stdout": b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'})()
+
+    monkeypatch.setattr(production_module.subprocess, "run", ssh)
+    assert SshOperatorProofVerifier().verifies("private Telegram reply")
+    assert "private Telegram reply" not in repr(seen)
+    payload = json.loads(bytes(seen["input"]).decode())
+    assert set(payload) == {"schema", "response_sha256"}
+    assert seen["argv"][-1] == "/opt/sensai/bin/sensai_local_e2e_proof.py"
+
+
+def test_operator_proof_fails_closed_for_missing_config_bad_output_and_ssh_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(production_module, "_OPERATOR_CONFIG", tmp_path / "missing.json")
+    assert not SshOperatorProofVerifier().verifies("private")
 
 
 def _runner(profile: Path, driver: ClaudeDriver) -> ProductionSensaiE2E:
@@ -251,7 +286,7 @@ def test_production_route_uses_public_input_production_model_and_resumed_telegra
     driver = _successful_driver()
     profile = _profile(tmp_path)
 
-    with pytest.raises(ProductionE2EError, match="telegram_continuation_reply_body_unavailable"):
+    with pytest.raises(ProductionE2EError, match="telegram_operator_proof_not_verified"):
         _runner(profile, driver).run()
     assert len(driver.calls) == 7
     auth_status, installation, status, plugin_list, telegram_start, continuation, cleanup = driver.calls
@@ -288,7 +323,7 @@ def test_report_and_persistent_profile_contain_no_prompt_stream_or_oauth_materia
     driver = _successful_driver()
     profile = _profile(tmp_path)
 
-    with pytest.raises(ProductionE2EError, match="telegram_continuation_reply_body_unavailable"):
+    with pytest.raises(ProductionE2EError, match="telegram_operator_proof_not_verified"):
         _runner(profile, driver).run()
 
     assert not list((profile / "runs").iterdir())
@@ -467,7 +502,7 @@ def test_cleanup_failure_is_reported_and_temporary_profile_is_still_deleted(tmp_
     )
     profile = _profile(tmp_path)
 
-    with pytest.raises(ProductionE2EError, match="telegram_continuation_reply_body_unavailable"):
+    with pytest.raises(ProductionE2EError, match="telegram_operator_proof_not_verified"):
         _runner(profile, driver).run()
 
     assert not list((profile / "runs").iterdir())
