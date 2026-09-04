@@ -537,6 +537,23 @@ def test_terminal_success_and_absent_terminal_result_remain_non_error() -> None:
     assert missing.terminal_error_count == 0
 
 
+def test_terminal_success_subtype_with_error_flag_is_not_treated_as_success() -> None:
+    evidence = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {"type": "result", "subtype": "success", "is_error": True},
+        ],
+        returncode=1,
+    )
+
+    assert evidence.terminal_result_kind is TerminalResultKind.OTHER
+    with pytest.raises(
+        ProductionE2EError,
+        match="installation_claude_exit_terminal_other_at_before_marketplace",
+    ):
+        ProductionSensaiE2E._require_installation(evidence)
+
+
 def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:
     assert _is_exact_public_sensai_inventory(
         [{"id": "sensai@sensai", "scope": "user", "enabled": True}]

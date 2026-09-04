@@ -291,9 +291,13 @@ def _terminal_result_summary(record: dict[str, object]) -> tuple[TerminalResultK
     known = _TERMINAL_RESULT_SUBTYPES.get(subtype) if isinstance(subtype, str) else None
     errors = record.get("errors")
     error_count = min(len(errors), _MAX_TERMINAL_ERROR_COUNT) if isinstance(errors, list) else 0
+    if record.get("is_error") is True:
+        if known is not None and known is not TerminalResultKind.SUCCESS:
+            return known, error_count
+        return TerminalResultKind.OTHER, error_count
     if known is not None:
         return known, error_count
-    if record.get("is_error") is True or isinstance(subtype, str):
+    if isinstance(subtype, str):
         return TerminalResultKind.OTHER, error_count
     return TerminalResultKind.NONE, error_count
 
