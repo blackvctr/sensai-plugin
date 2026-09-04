@@ -37,7 +37,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Protocol
@@ -174,7 +174,7 @@ class ToolResultEvidence:
     kind: ToolKind
     succeeded: bool
     sensai_reply: SensaiReplyKind | None
-    reply_sha256: str | None = None
+    reply_sha256: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +235,7 @@ class SshOperatorProofVerifier:
             process = subprocess.Popen(
                 [str(_SSH_EXECUTABLE), "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={_OPERATOR_KNOWN_HOSTS}", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "RemoteCommand=none", "-o", "ControlMaster=no", "-o", "ForwardAgent=no", config["host"], _REMOTE_PROOF_COMMAND],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
             assert process.stdin is not None and process.stdout is not None
             process.stdin.write(payload)
@@ -261,6 +262,8 @@ class SshOperatorProofVerifier:
                             return False
             finally:
                 selector.close()
+                if process.poll() is None:
+                    _terminate(process)
             return process.wait() == 0 and bytes(output) == b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'
         except (OSError, BrokenPipeError):
             return False
@@ -269,7 +272,7 @@ class SshOperatorProofVerifier:
 def _strict_private_file(path: Path) -> bytes:
     root = _OPERATOR_CONFIG_ROOT
     directory = os.lstat(root)
-    if stat.S_ISLNK(directory.st_mode) or not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) & 0o022:
+    if stat.S_ISLNK(directory.st_mode) or not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
         raise ValueError("unsafe proof configuration directory")
     before = os.lstat(path)
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600:
@@ -278,7 +281,8 @@ def _strict_private_file(path: Path) -> bytes:
     with os.fdopen(descriptor, "rb") as handle:
         opened = os.fstat(handle.fileno())
         data = handle.read(4097)
-    if len(data) > 4096 or (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size) != (opened.st_dev, opened.st_ino, opened.st_mtime_ns, opened.st_size):
+    after = os.lstat(path)
+    if len(data) > 4096 or (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size) != (opened.st_dev, opened.st_ino, opened.st_mtime_ns, opened.st_size) or (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size) != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
         raise ValueError("proof configuration changed while reading")
     return data
 
