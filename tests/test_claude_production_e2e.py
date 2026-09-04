@@ -84,16 +84,20 @@ def _operator_files(
     root.mkdir(mode=0o700)
     config = root / "local-e2e-proof-ssh.json"
     known_hosts = root / "local-e2e-proof-known_hosts"
+    identity = root / "local-e2e-proof-identity"
     config.write_bytes(
         config_bytes
-        or json.dumps({"schema": "sensai-local-e2e-ssh-v1", "host": "proof.example"}).encode()
+        or json.dumps({"schema": "sensai-local-e2e-ssh-v1", "host": "proof.example", "user": "sensai_proof", "port": 22, "identity_file": "local-e2e-proof-identity"}).encode()
     )
     known_hosts.write_text("proof.example ssh-ed25519 public-key\n", encoding="utf-8")
+    identity.write_text("private key\n", encoding="utf-8")
     config.chmod(0o600)
     known_hosts.chmod(0o600)
+    identity.chmod(0o600)
     monkeypatch.setattr(production_module, "_OPERATOR_CONFIG_ROOT", root)
     monkeypatch.setattr(production_module, "_OPERATOR_CONFIG", config)
     monkeypatch.setattr(production_module, "_OPERATOR_KNOWN_HOSTS", known_hosts)
+    monkeypatch.setattr(production_module, "_OPERATOR_IDENTITY", identity)
     return root, config, known_hosts
 
 
@@ -290,6 +294,7 @@ def test_private_operator_files_reject_each_unsafe_configuration_directory(
     else:
         config.unlink()
         known_hosts.unlink()
+        (root / "local-e2e-proof-identity").unlink()
         root.rmdir()
         root.write_text("not a directory", encoding="utf-8")
 

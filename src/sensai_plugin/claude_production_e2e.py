@@ -68,6 +68,7 @@ _OPERATOR_CONFIG_SCHEMA = "sensai-local-e2e-ssh-v1"
 _OPERATOR_CONFIG = Path.home() / ".config" / "sensai" / "local-e2e-proof-ssh.json"
 _OPERATOR_CONFIG_ROOT = _OPERATOR_CONFIG.parent
 _OPERATOR_KNOWN_HOSTS = _OPERATOR_CONFIG_ROOT / "local-e2e-proof-known_hosts"
+_OPERATOR_IDENTITY = _OPERATOR_CONFIG_ROOT / "local-e2e-proof-identity"
 _SSH_EXECUTABLE = Path("/usr/bin/ssh")
 _REMOTE_PROOF_COMMAND = "/opt/sensai/bin/sensai_local_e2e_proof.py"
 _MAX_OPERATOR_PROOF_OUTPUT = 256
@@ -218,15 +219,21 @@ class SshOperatorProofVerifier:
         try:
             config = _strict_private_json(_OPERATOR_CONFIG)
             _strict_private_file(_OPERATOR_KNOWN_HOSTS)
+            _strict_private_file(_OPERATOR_IDENTITY)
             _strict_ssh_binary()
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return False
         if (
             not isinstance(config, dict)
-            or set(config) != {"schema", "host"}
+            or set(config) != {"schema", "host", "user", "port", "identity_file"}
             or config.get("schema") != _OPERATOR_CONFIG_SCHEMA
             or not isinstance(config.get("host"), str)
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", config["host"])
+            or not isinstance(config.get("user"), str)
+            or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", config["user"])
+            or not isinstance(config.get("port"), int)
+            or not 1 <= config["port"] <= 65535
+            or config.get("identity_file") != _OPERATOR_IDENTITY.name
         ):
             return False
         payload = (
@@ -242,6 +249,10 @@ class SshOperatorProofVerifier:
                     str(_SSH_EXECUTABLE),
                     "-F",
                     "/dev/null",
+                    "-i",
+                    str(_OPERATOR_IDENTITY),
+                    "-p",
+                    str(config["port"]),
                     "-o",
                     "BatchMode=yes",
                     "-o",
@@ -260,7 +271,7 @@ class SshOperatorProofVerifier:
                     "ControlMaster=no",
                     "-o",
                     "ForwardAgent=no",
-                    config["host"],
+                    f"{config['user']}@{config['host']}",
                     _REMOTE_PROOF_COMMAND,
                 ],
                 stdin=subprocess.PIPE,

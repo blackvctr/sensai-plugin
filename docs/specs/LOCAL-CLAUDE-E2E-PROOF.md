@@ -13,12 +13,17 @@ link, and must not be writable by group or others.  Create it with `0700`.
 file with mode `0600` and exactly this shape:
 
 ```json
-{"schema":"sensai-local-e2e-ssh-v1","host":"proof-host.example"}
+{"schema":"sensai-local-e2e-ssh-v1","host":"proof-host.example","user":"sensai_proof","port":22,"identity_file":"local-e2e-proof-identity"}
 ```
 
 `~/.config/sensai/local-e2e-proof-known_hosts` must also be a regular,
 user-owned `0600` file, not a symbolic link.  Put only the approved server
 host key there.
+
+`~/.config/sensai/local-e2e-proof-identity` is the only accepted SSH private
+key path. It must be a regular user-owned `0600` file, not a symbolic link.
+The host is a direct hostname or IP address, the user is a simple Unix account
+name, and the port is an integer from 1 through 65535.
 
 The runner ignores user SSH configuration, global host keys, proxies,
 forwarding, and remote commands.  It invokes only the server's fixed proof
