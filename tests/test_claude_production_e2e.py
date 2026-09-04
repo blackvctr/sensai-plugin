@@ -53,8 +53,15 @@ def _profile(tmp_path: Path) -> Path:
     source.parent.chmod(0o700)
     source.write_text(json.dumps({"claudeAiOauth": {"token": "private-token"}}), encoding="utf-8")
     source.chmod(0o600)
+    account_config = Path.home() / ".test-account" / ".claude.json"
+    account_config.parent.mkdir(mode=0o700)
+    account_config.parent.chmod(0o700)
+    account_config.write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "private-account"}}), encoding="utf-8"
+    )
+    account_config.chmod(0o600)
     target = Path.home() / ".local" / "share" / "sensai-e2e"
-    return provision_profile(target, source).root
+    return provision_profile(target, source, account_config).root
 
 
 def _test_contract():

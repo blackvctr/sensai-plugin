@@ -99,6 +99,10 @@ class ClaudeE2EProfile:
         return self.root / "baseline" / "config" / ".credentials.json"
 
     @property
+    def baseline_account_config(self) -> Path:
+        return self.root / "baseline" / "config" / ".claude.json"
+
+    @property
     def owner_marker(self) -> Path:
         return self.root / _OWNER_MARKER_NAME
 
@@ -202,10 +206,31 @@ def _minimal_credentials(source: Path, *, require_private_owner: bool) -> bytes:
     return (json.dumps(minimal, sort_keys=True) + "\n").encode()
 
 
+def _minimal_account_config(source: Path, *, require_private_owner: bool) -> bytes:
+    try:
+        document = json.loads(
+            _read_regular_bytes(source, require_private_owner=require_private_owner)
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ClaudeE2EProfileError("Claude account source is not valid JSON") from error
+    if source.name != ".claude.json":
+        raise ClaudeE2EProfileError("Claude account source must be the dedicated .claude.json file")
+    if not isinstance(document, dict) or not isinstance(document.get("oauthAccount"), dict):
+        raise ClaudeE2EProfileError("Claude account source has no oauthAccount")
+    minimal = {"oauthAccount": document["oauthAccount"]}
+    return (json.dumps(minimal, sort_keys=True) + "\n").encode()
+
+
 def _configured_current_credentials_path() -> Path:
     configured = os.environ.get("CLAUDE_CONFIG_DIR")
     config = Path(configured) if configured else Path.home() / ".claude"
     return _absolute(config / ".credentials.json")
+
+
+def _configured_current_account_config_path() -> Path:
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    config = Path(configured) if configured else Path.home()
+    return _absolute(config / ".claude.json")
 
 
 def _assert_no_symlink_components(path: Path) -> None:
@@ -256,10 +281,15 @@ def _assert_private_linux_source_location(source: Path) -> None:
             raise ClaudeE2EProfileError("Claude authorization source parent is not private")
 
 
-def _profile_manifest(credentials: bytes, source_trust: SourceTrust) -> dict[str, object]:
+def _profile_manifest(
+    credentials: bytes,
+    account_config: bytes,
+    source_trust: SourceTrust,
+) -> dict[str, object]:
     return {
         **_MANIFEST,
         "claude_login_sha256": hashlib.sha256(credentials).hexdigest(),
+        "oauth_account_sha256": hashlib.sha256(account_config).hexdigest(),
         "source_trust": source_trust.value,
     }
 
@@ -280,20 +310,33 @@ def discover_current_credentials() -> Path:
     return source
 
 
+def discover_current_account_config() -> Path:
+    """Return the configured Claude main config after strict source validation."""
+
+    source = _configured_current_account_config_path()
+    _assert_private_linux_source_location(source)
+    _minimal_account_config(source, require_private_owner=True)
+    return source
+
+
 def _prepare_provision(
     profile: Path,
     source_credentials: Path,
+    source_account_config: Path,
     *,
     source_trust: SourceTrust,
-) -> tuple[ProvisionDescription, bytes]:
+) -> tuple[ProvisionDescription, bytes, bytes]:
     target = _assert_profile_location(profile)
     _assert_no_symlink_components(source_credentials)
+    _assert_no_symlink_components(source_account_config)
     if source_trust is SourceTrust.PRIVATE_LOCAL_SOURCE:
         _assert_private_linux_source_location(source_credentials)
+    _assert_private_linux_source_location(source_account_config)
     credentials = _minimal_credentials(
         source_credentials,
         require_private_owner=source_trust is SourceTrust.PRIVATE_LOCAL_SOURCE,
     )
+    account_config = _minimal_account_config(source_account_config, require_private_owner=True)
     _assert_separate_from_source(target, source_credentials)
     if target.exists() or target.is_symlink():
         raise ClaudeE2EProfileError("persistent profile already exists")
@@ -305,13 +348,19 @@ def _prepare_provision(
             source_trust=source_trust,
         ),
         credentials,
+        account_config,
     )
 
 
-def describe_provision(profile: Path, source_credentials: Path) -> ProvisionDescription:
+def describe_provision(
+    profile: Path,
+    source_credentials: Path,
+    source_account_config: Path,
+) -> ProvisionDescription:
     return _prepare_provision(
         profile,
         source_credentials,
+        source_account_config,
         source_trust=SourceTrust.PRIVATE_LOCAL_SOURCE,
     )[0]
 
@@ -466,6 +515,7 @@ def _publish_private_profile(staging: Path, target: Path) -> None:
 def _create_profile(
     description: ProvisionDescription,
     credentials: bytes,
+    account_config: bytes,
 ) -> ClaudeE2EProfile:
     """Create a private profile from one already validated in-memory login record."""
 
@@ -491,11 +541,13 @@ def _create_profile(
             _mkdir_private(config)
             _mkdir_private(staging / "runs")
             _write_private(config / ".credentials.json", credentials)
+            _write_private(config / ".claude.json", account_config)
             _write_private(
                 staging / "manifest.json",
                 (
                     json.dumps(
-                        _profile_manifest(credentials, description.source_trust), sort_keys=True
+                        _profile_manifest(credentials, account_config, description.source_trust),
+                        sort_keys=True,
                     )
                     + "\n"
                 ).encode(),
@@ -519,15 +571,20 @@ def _create_profile(
     return ClaudeE2EProfile(root)
 
 
-def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfile:
-    """Create a profile from one strictly private Linux Claude source."""
+def provision_profile(
+    profile: Path,
+    source_credentials: Path,
+    source_account_config: Path,
+) -> ClaudeE2EProfile:
+    """Create a profile from two strictly private Linux Claude auth records."""
 
-    description, credentials = _prepare_provision(
+    description, credentials, account_config = _prepare_provision(
         profile,
         source_credentials,
+        source_account_config,
         source_trust=SourceTrust.PRIVATE_LOCAL_SOURCE,
     )
-    return _create_profile(description, credentials)
+    return _create_profile(description, credentials, account_config)
 
 
 def provision_trusted_current_profile(profile: Path) -> ClaudeE2EProfile:
@@ -538,12 +595,13 @@ def provision_trusted_current_profile(profile: Path) -> ClaudeE2EProfile:
     login record in memory, and never reads that source again.
     """
 
-    description, credentials = _prepare_provision(
+    description, credentials, account_config = _prepare_provision(
         profile,
         _configured_current_credentials_path(),
+        _configured_current_account_config_path(),
         source_trust=SourceTrust.USER_APPROVED_CURRENT_SOURCE_ONCE,
     )
-    return _create_profile(description, credentials)
+    return _create_profile(description, credentials, account_config)
 
 
 def _load_profile(profile: Path) -> ClaudeE2EProfile:
@@ -562,8 +620,13 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
         raise ClaudeE2EProfileError("persistent profile manifest is invalid") from error
     if not isinstance(value, dict):
         raise ClaudeE2EProfileError("persistent profile manifest is not recognized")
-    expected_manifest_fields = set(_MANIFEST) | {"claude_login_sha256", "source_trust"}
+    expected_manifest_fields = set(_MANIFEST) | {
+        "claude_login_sha256",
+        "oauth_account_sha256",
+        "source_trust",
+    }
     digest = value.get("claude_login_sha256")
+    account_digest = value.get("oauth_account_sha256")
     source_trust = value.get("source_trust")
     if (
         set(value) != expected_manifest_fields
@@ -571,6 +634,9 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
         or not isinstance(digest, str)
         or len(digest) != 64
         or any(character not in "0123456789abcdef" for character in digest)
+        or not isinstance(account_digest, str)
+        or len(account_digest) != 64
+        or any(character not in "0123456789abcdef" for character in account_digest)
         or source_trust not in {item.value for item in SourceTrust}
     ):
         raise ClaudeE2EProfileError("persistent profile manifest is not recognized")
@@ -590,6 +656,9 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
     credentials = _load_baseline_credentials(result.baseline_credentials)
     if hashlib.sha256(credentials).hexdigest() != digest:
         raise ClaudeE2EProfileError("persistent Claude login record does not match its profile")
+    account_config = _load_baseline_account_config(result.baseline_account_config)
+    if hashlib.sha256(account_config).hexdigest() != account_digest:
+        raise ClaudeE2EProfileError("persistent Claude account record does not match its profile")
     runs = root / "runs"
     try:
         runs_stat = os.lstat(runs)
@@ -609,6 +678,19 @@ def _load_baseline_credentials(path: Path) -> bytes:
         raise ClaudeE2EProfileError("persistent Claude login record was changed")
     if not isinstance(value["claudeAiOauth"], dict):
         raise ClaudeE2EProfileError("persistent Claude login record was changed")
+    _assert_observed_mode(path, 0o600)
+    return (json.dumps(value, sort_keys=True) + "\n").encode()
+
+
+def _load_baseline_account_config(path: Path) -> bytes:
+    try:
+        value = json.loads(_read_regular_bytes(path))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ClaudeE2EProfileError("persistent Claude account record is invalid") from error
+    if not isinstance(value, dict) or set(value) != {"oauthAccount"}:
+        raise ClaudeE2EProfileError("persistent Claude account record was changed")
+    if not isinstance(value["oauthAccount"], dict):
+        raise ClaudeE2EProfileError("persistent Claude account record was changed")
     _assert_observed_mode(path, 0o600)
     return (json.dumps(value, sort_keys=True) + "\n").encode()
 
@@ -734,6 +816,10 @@ def create_fresh_run(profile: Path) -> Iterator[ClaudeE2ERun]:
                 Path(environment["CLAUDE_CONFIG_DIR"]) / ".credentials.json",
                 _load_baseline_credentials(persistent.baseline_credentials),
             )
+            _write_private(
+                Path(environment["CLAUDE_CONFIG_DIR"]) / ".claude.json",
+                _load_baseline_account_config(persistent.baseline_account_config),
+            )
             yield ClaudeE2ERun(
                 run_root,
                 work,
@@ -745,12 +831,17 @@ def create_fresh_run(profile: Path) -> Iterator[ClaudeE2ERun]:
             _remove_owned_tree(run_root, run_identity)
 
 
-def _source_from_arguments(arguments: argparse.Namespace) -> Path:
-    source = arguments.source_credentials
-    if isinstance(source, Path):
-        return source
+def _sources_from_arguments(arguments: argparse.Namespace) -> tuple[Path, Path]:
+    credentials = arguments.source_credentials
+    account_config = arguments.source_account_config
+    if isinstance(credentials, Path):
+        if not isinstance(account_config, Path):
+            raise ClaudeE2EProfileError("--source-credentials requires --source-account-config")
+        return credentials, account_config
     if arguments.detect_source is True:
-        return _configured_current_credentials_path()
+        if account_config is not None:
+            raise ClaudeE2EProfileError("--detect-source does not accept --source-account-config")
+        return _configured_current_credentials_path(), _configured_current_account_config_path()
     raise ClaudeE2EProfileError("choose --source-credentials or --detect-source")
 
 
@@ -763,12 +854,15 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--source-credentials", type=Path)
     source.add_argument("--detect-source", action="store_true")
     source.add_argument("--trust-current-credentials-once", action="store_true")
+    parser.add_argument("--source-account-config", type=Path)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--dry-run", action="store_true")
     action.add_argument("--provision", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.trust_current_credentials_once and not arguments.provision:
         parser.error("--trust-current-credentials-once requires --provision")
+    if arguments.trust_current_credentials_once and arguments.source_account_config is not None:
+        parser.error("--trust-current-credentials-once does not accept --source-account-config")
     try:
         if arguments.trust_current_credentials_once:
             provisioned = provision_trusted_current_profile(arguments.profile)
@@ -780,11 +874,11 @@ def main(argv: list[str] | None = None) -> int:
             if not provisioned.root.exists():  # pragma: no cover
                 raise AssertionError("provisioned profile disappeared")
             return 0
-        credentials = _source_from_arguments(arguments)
+        credentials, account_config = _sources_from_arguments(arguments)
         if arguments.dry_run:
-            print(describe_provision(arguments.profile, credentials).safe_summary())
+            print(describe_provision(arguments.profile, credentials, account_config).safe_summary())
             return 0
-        provisioned = provision_profile(arguments.profile, credentials)
+        provisioned = provision_profile(arguments.profile, credentials, account_config)
     except ClaudeE2EProfileError as error:
         parser.exit(1, f"Claude E2E profile was not provisioned: {error}\n")
     print(

@@ -10,19 +10,21 @@ authorization, browser data, or Google data to a server.
 ## Persistent contents
 
 The normal provisioner accepts one explicit private Linux Claude credential file
-and verifies that it contains a Claude login. Its file must belong to the local
-user, have mode `0600`, contain no symlink in its path, and be outside mounted
-and development directories. It writes only that login into its own profile. It
-does not copy Claude settings, conversation history, plugins, marketplace state,
+and verifies that it contains the two minimal Claude auth records: `claudeAiOauth`
+and `oauthAccount`. Their files must belong to the local user, have mode `0600`,
+contain no symlink in their paths, and be outside mounted and development
+directories. It writes only those two records into its own profile. It does not
+copy other Claude settings, conversation history, plugins, marketplace state,
 browser data, or MCP/Sensai authorization.
 
 The current working Claude profile can be a shared or mounted copy which cannot
 meet that contract. `--trust-current-credentials-once` is the one explicit
 exception: it reads exactly the currently configured Claude credential file once
 after the person has approved the migration, reduces it to the Claude login in
-memory, and writes a new private baseline. It accepts no arbitrary source path,
-cannot be used for a dry run, and never refreshes the baseline later. This is a
-deliberate trust event, not a claim that the shared source is protected.
+memory, combines it with only `oauthAccount` from the current private main
+Claude config, and writes a new private baseline. It accepts no arbitrary source
+path, cannot be used for a dry run, and never refreshes the baseline later. This
+is a deliberate trust event, not a claim that the shared source is protected.
 It still rejects a symlink in the configured source path: the configured path
 must point directly to the already approved current directory before migration.
 
@@ -48,7 +50,8 @@ The command is explicit. `--dry-run` validates the requested source and target
 without creating any file. `--detect-source` means exactly the credential file
 under the currently configured `CLAUDE_CONFIG_DIR` (or its standard default).
 If that file is absent or invalid, the command stops; it does not search another
-Claude profile. `--source-credentials` names a concrete alternative.
+Claude profile. `--source-credentials` names a concrete credential alternative
+and must be paired with its concrete `--source-account-config` file.
 
 ```sh
 uv run python scripts/provision_claude_e2e_profile.py \
@@ -75,8 +78,8 @@ through another explicit migration. The runner never rereads the old source.
 ## One test run
 
 `create_fresh_run` creates a new child directory under the persistent profile,
-copies the one Claude-login record into it, and supplies all of these isolated
-locations to the future Claude process:
+copies the two minimal Claude auth records into its isolated configuration, and
+supplies all of these isolated locations to the future Claude process:
 
 - `HOME`
 - `CLAUDE_CONFIG_DIR`

@@ -13,13 +13,19 @@ import pytest
 from sensai_plugin import claude_e2e_profile as profile_module
 from sensai_plugin.claude_e2e_profile import (
     CLAUDE_E2E_MODEL,
+    ClaudeE2EProfile,
     ClaudeE2EProfileError,
+    ProvisionDescription,
     SourceTrust,
     create_fresh_run,
-    describe_provision,
     main,
-    provision_profile,
     provision_trusted_current_profile,
+)
+from sensai_plugin.claude_e2e_profile import (
+    describe_provision as _describe_provision,
+)
+from sensai_plugin.claude_e2e_profile import (
+    provision_profile as _provision_profile,
 )
 
 
@@ -60,12 +66,42 @@ def _credentials(path: Path) -> dict[str, object]:
     return value
 
 
+def _account_source_path() -> Path:
+    source = Path.home() / ".private-account-source" / ".claude.json"
+    source.parent.mkdir(mode=0o700, exist_ok=True)
+    source.parent.chmod(0o700)
+    return source
+
+
+def _account_config(path: Path) -> dict[str, object]:
+    value: dict[str, object] = {
+        "oauthAccount": {"accountUuid": "private-account", "emailAddress": "private@example"},
+        "unrelated": "must-not-be-copied",
+    }
+    path.write_text(json.dumps(value), encoding="utf-8")
+    path.chmod(0o600)
+    return value
+
+
+def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfile:
+    account_config = _account_source_path()
+    _account_config(account_config)
+    return _provision_profile(profile, source_credentials, account_config)
+
+
+def describe_provision(profile: Path, source_credentials: Path) -> ProvisionDescription:
+    account_config = _account_source_path()
+    _account_config(account_config)
+    return _describe_provision(profile, source_credentials, account_config)
+
+
 def _current_unsafe_source() -> Path:
     source = Path.home() / ".claude" / ".credentials.json"
     source.parent.mkdir(mode=0o700)
     _credentials(source)
     source.parent.chmod(0o777)
     source.chmod(0o777)
+    _account_config(Path.home() / ".claude.json")
     return source
 
 
@@ -88,6 +124,8 @@ def test_cli_dry_run_does_not_create_profile_or_print_authorization(
 ) -> None:
     source = _source_path(tmp_path)
     _credentials(source)
+    account_config = _account_source_path()
+    _account_config(account_config)
     target = _profile_path()
 
     assert main(
@@ -96,12 +134,46 @@ def test_cli_dry_run_does_not_create_profile_or_print_authorization(
             str(target),
             "--source-credentials",
             str(source),
+            "--source-account-config",
+            str(account_config),
             "--dry-run",
         ]
     ) == 0
 
     assert not target.exists()
     assert "private-Claude-token" not in capsys.readouterr().out
+
+
+def test_cli_normal_source_requires_a_separate_account_config(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+
+    with pytest.raises(SystemExit) as captured:
+        main(
+            [
+                "--profile",
+                str(_profile_path()),
+                "--source-credentials",
+                str(source),
+                "--dry-run",
+            ]
+        )
+
+    assert captured.value.code == 1
+    assert not _profile_path().exists()
+
+
+def test_normal_provision_rejects_a_nonprivate_account_config(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    account_config = _account_source_path()
+    _account_config(account_config)
+    account_config.chmod(0o777)
+
+    with pytest.raises(ClaudeE2EProfileError, match="private and owned"):
+        _provision_profile(_profile_path(), source, account_config)
+
+    assert not _profile_path().exists()
 
 
 def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path: Path) -> None:
@@ -114,6 +186,7 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
     profile = provision_profile(target, source)
 
     baseline = profile.baseline_credentials
+    baseline_account = profile.baseline_account_config
     copied = json.loads(baseline.read_text(encoding="utf-8"))
     assert copied == {"claudeAiOauth": original["claudeAiOauth"]}
     assert not (profile.root / "baseline" / "config" / "history.jsonl").exists()
@@ -121,11 +194,19 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
     assert not (profile.root / "baseline" / "secure-storage").exists()
     assert profile.root.stat().st_mode & 0o777 == 0o700
     assert baseline.stat().st_mode & 0o777 == 0o600
+    assert baseline_account.stat().st_mode & 0o777 == 0o600
+    assert json.loads(baseline_account.read_text(encoding="utf-8")) == {
+        "oauthAccount": {"accountUuid": "private-account", "emailAddress": "private@example"}
+    }
     assert profile.owner_marker.stat().st_mode & 0o777 == 0o600
     assert (profile.root / "manifest.json").stat().st_mode & 0o777 == 0o600
     assert (profile.root / "runs").stat().st_mode & 0o777 == 0o700
     manifest = json.loads((profile.root / "manifest.json").read_text(encoding="utf-8"))
-    assert {key: value for key, value in manifest.items() if key != "claude_login_sha256"} == {
+    assert {
+        key: value
+        for key, value in manifest.items()
+        if key not in {"claude_login_sha256", "oauth_account_sha256"}
+    } == {
         "auth_records": ["claudeAiOauth"],
         "format_version": 1,
         "model": "claude-sonnet-5",
@@ -133,6 +214,8 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
     }
     assert isinstance(manifest["claude_login_sha256"], str)
     assert len(manifest["claude_login_sha256"]) == 64
+    assert isinstance(manifest["oauth_account_sha256"], str)
+    assert len(manifest["oauth_account_sha256"]) == 64
 
 
 def test_normal_provision_rejects_a_world_writable_source(tmp_path: Path) -> None:
@@ -208,17 +291,32 @@ def test_one_time_current_migration_copies_only_minimal_login_and_never_revisits
     assert "mcpOAuth" not in profile.baseline_credentials.read_text(encoding="utf-8")
 
     source.unlink()
+    (Path.home() / ".claude.json").unlink()
     with create_fresh_run(profile.root) as run:
         assert run.work.is_dir()
 
 
 def test_one_time_current_migration_rejects_invalid_source_without_creating_target() -> None:
-    source = Path.home() / ".claude" / ".credentials.json"
-    source.parent.mkdir(mode=0o777)
+    source = _current_unsafe_source()
     source.write_text("not json", encoding="utf-8")
     source.chmod(0o777)
 
     with pytest.raises(ClaudeE2EProfileError, match="valid JSON"):
+        provision_trusted_current_profile(_profile_path())
+
+    assert not _profile_path().exists()
+
+
+@pytest.mark.parametrize("account", [{}, {"oauthAccount": None}, {"oauthAccount": []}])
+def test_one_time_current_migration_rejects_missing_or_invalid_account_without_target(
+    account: object,
+) -> None:
+    _current_unsafe_source()
+    account_path = Path.home() / ".claude.json"
+    account_path.write_text(json.dumps(account), encoding="utf-8")
+    account_path.chmod(0o600)
+
+    with pytest.raises(ClaudeE2EProfileError, match="oauthAccount"):
         provision_trusted_current_profile(_profile_path())
 
     assert not _profile_path().exists()
@@ -333,6 +431,11 @@ def test_one_time_current_migration_cli_requires_explicit_provision_and_never_pr
         json.dumps({"claudeAiOauth": {"accessToken": "do-not-print"}}), encoding="utf-8"
     )
     source.chmod(0o777)
+    account_path = Path.home() / ".claude.json"
+    account_path.write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "account-do-not-print"}}), encoding="utf-8"
+    )
+    account_path.chmod(0o600)
 
     with pytest.raises(SystemExit) as dry_run:
         main(
@@ -490,6 +593,13 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
         assert copied == {
             "claudeAiOauth": {"accessToken": "private-Claude-token", "expiresAt": 123}
         }
+        copied_account = json.loads(
+            (run.root / "config" / ".claude.json").read_text(encoding="utf-8")
+        )
+        assert copied_account == {
+            "oauthAccount": {"accountUuid": "private-account", "emailAddress": "private@example"}
+        }
+        assert not (run.root / "home" / ".claude.json").exists()
         expected_roots = {
             "HOME": run.root / "home",
             "CLAUDE_CONFIG_DIR": run.root / "config",
@@ -649,6 +759,23 @@ def test_fresh_run_rejects_tampered_or_symlinked_credential_baseline(tmp_path: P
         profile.root
     ):
         pytest.fail("symlinked baseline must not create a run")
+
+
+def test_fresh_run_rejects_tampered_account_baseline(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    profile = provision_profile(_profile_path(), source)
+    account = profile.baseline_account_config
+    account.write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "private-account"}, "other": "injected"}),
+        encoding="utf-8",
+    )
+    account.chmod(0o600)
+
+    with pytest.raises(ClaudeE2EProfileError, match="account record was changed"), create_fresh_run(
+        profile.root
+    ):
+        pytest.fail("tampered account must not create a run")
 
 
 def test_fresh_run_rejects_replacement_with_a_different_valid_claude_login(
