@@ -44,7 +44,7 @@ def _linux_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _profile(tmp_path: Path) -> Path:
     source = tmp_path / "source" / ".credentials.json"
-    source.parent.mkdir()
+    source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(
         json.dumps({"claudeAiOauth": {"token": "private-token"}}), encoding="utf-8"
     )
@@ -146,12 +146,13 @@ def test_operator_proof_fails_closed_for_missing_config_bad_output_and_ssh_failu
     assert not SshOperatorProofVerifier().verifies_digest("a" * 64)
 
 
-def _runner(profile: Path, driver: ClaudeDriver) -> ProductionSensaiE2E:
+def _runner(profile: Path, driver: ClaudeDriver, proof: object | None = None) -> ProductionSensaiE2E:
     return ProductionSensaiE2E(
         profile=profile,
         driver=driver,
         contract_loader=_test_contract,
         executable_resolver=lambda: "claude",
+        operator_proof=proof,
     )
 
 
@@ -163,6 +164,7 @@ def _evidence(
     *tools: ToolKind,
     texts: tuple[TextEvidence, ...] = (),
     sensai_reply: SensaiReplyKind | None = None,
+    reply_sha256: str | None = None,
 ) -> AgentEvidence:
     return AgentEvidence(
         result_seen=True,
@@ -178,6 +180,7 @@ def _evidence(
                 kind=tool,
                 succeeded=True,
                 sensai_reply=sensai_reply if tool is ToolKind.TELL_SENSAI else None,
+                reply_sha256=reply_sha256 if tool is ToolKind.TELL_SENSAI else None,
             )
             for tool in tools
         ),
@@ -290,6 +293,37 @@ def _successful_driver() -> _FakeDriver:
             _evidence(ToolKind.FORGET_ME),
         )
     )
+
+
+class _Proof:
+    def __init__(self, result: bool | Exception, events: list[str]) -> None:
+        self._result = result
+        self._events = events
+
+    def verifies_digest(self, _digest: str) -> bool:
+        self._events.append("proof")
+        if isinstance(self._result, Exception):
+            raise self._result
+        return self._result
+
+
+def test_operator_proof_failure_and_exception_still_reach_forget_me(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    for result in (False, RuntimeError("private")):
+        events: list[str] = []
+        driver = _FakeDriver(
+            (
+                _evidence(ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL, ToolKind.LOGIN, ToolKind.NEW_CHAT_URI, texts=(_text(expected=True), _text(expected=True))),
+                _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.INITIAL_DISCOVERY),
+                _evidence(ToolKind.TELL_SENSAI, reply_sha256="a" * 64),
+                _evidence(ToolKind.FORGET_ME),
+            )
+        )
+        proof = _Proof(result, events)
+        with pytest.raises((ProductionE2EError, RuntimeError)):
+            _runner(profile, driver, proof).run()
+        assert events == ["proof"]
+        assert driver.calls[-1].command[-1].startswith("Заверши проверку")
 
 
 def _argument(command: Sequence[str], option: str) -> str:
