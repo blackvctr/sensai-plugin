@@ -32,6 +32,7 @@ import shlex
 import signal
 import shutil
 import subprocess
+import stat
 import time
 import uuid
 from collections.abc import Sequence
@@ -65,6 +66,9 @@ PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/m
 _OPERATOR_PROOF_SCHEMA = "sensai-local-e2e-proof-v1"
 _OPERATOR_CONFIG_SCHEMA = "sensai-local-e2e-ssh-v1"
 _OPERATOR_CONFIG = Path.home() / ".config" / "sensai" / "local-e2e-proof-ssh.json"
+_OPERATOR_CONFIG_ROOT = _OPERATOR_CONFIG.parent
+_OPERATOR_KNOWN_HOSTS = _OPERATOR_CONFIG_ROOT / "local-e2e-proof-known_hosts"
+_SSH_EXECUTABLE = Path("/usr/bin/ssh")
 _REMOTE_PROOF_COMMAND = "/opt/sensai/bin/sensai_local_e2e_proof.py"
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
@@ -207,22 +211,18 @@ class SshOperatorProofVerifier:
 
     def verifies(self, response: str) -> bool:
         try:
-            config = json.loads(_OPERATOR_CONFIG.read_text(encoding="utf-8"))
-            mode = _OPERATOR_CONFIG.stat().st_mode & 0o777
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            config = _strict_private_json(_OPERATOR_CONFIG)
+            _strict_private_file(_OPERATOR_KNOWN_HOSTS)
+            _strict_ssh_binary()
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return False
         if (
             not isinstance(config, dict)
-            or set(config) != {"schema", "host", "known_hosts"}
+            or set(config) != {"schema", "host"}
             or config.get("schema") != _OPERATOR_CONFIG_SCHEMA
             or not isinstance(config.get("host"), str)
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", config["host"])
-            or not isinstance(config.get("known_hosts"), str)
-            or mode != 0o600
         ):
-            return False
-        known_hosts = Path(config["known_hosts"])
-        if not known_hosts.is_absolute() or not known_hosts.is_file():
             return False
         payload = json.dumps(
             {"schema": _OPERATOR_PROOF_SCHEMA, "response_sha256": hashlib.sha256(response.encode()).hexdigest()},
@@ -230,12 +230,48 @@ class SshOperatorProofVerifier:
         ).encode() + b"\n"
         try:
             completed = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}", config["host"], _REMOTE_PROOF_COMMAND],
+                [str(_SSH_EXECUTABLE), "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={_OPERATOR_KNOWN_HOSTS}", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "RemoteCommand=none", "-o", "ControlMaster=no", "-o", "ForwardAgent=no", config["host"], _REMOTE_PROOF_COMMAND],
                 input=payload, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
         return completed.returncode == 0 and completed.stdout == b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'
+
+
+def _strict_private_file(path: Path) -> bytes:
+    root = _OPERATOR_CONFIG_ROOT
+    directory = os.lstat(root)
+    if stat.S_ISLNK(directory.st_mode) or not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) & 0o022:
+        raise ValueError("unsafe proof configuration directory")
+    before = os.lstat(path)
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600:
+        raise ValueError("unsafe proof configuration file")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        data = handle.read(4097)
+    if len(data) > 4096 or (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size) != (opened.st_dev, opened.st_ino, opened.st_mtime_ns, opened.st_size):
+        raise ValueError("proof configuration changed while reading")
+    return data
+
+
+def _strict_private_json(path: Path) -> object:
+    return json.loads(_strict_private_file(path).decode("utf-8"), object_pairs_hook=_reject_duplicate_object)
+
+
+def _reject_duplicate_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _strict_ssh_binary() -> None:
+    item = os.lstat(_SSH_EXECUTABLE)
+    if stat.S_ISLNK(item.st_mode) or not stat.S_ISREG(item.st_mode) or item.st_uid != 0 or stat.S_IMODE(item.st_mode) & 0o022:
+        raise ValueError("unsafe ssh executable")
 
 
 @dataclass(frozen=True, slots=True)

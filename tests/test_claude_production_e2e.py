@@ -100,14 +100,21 @@ def test_operator_proof_sends_only_hash_and_accepts_only_exact_verified_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "operator.json"
-    known_hosts = tmp_path / "known_hosts"
+    root = tmp_path / "sensai"
+    root.mkdir(mode=0o700)
+    config = root / "local-e2e-proof-ssh.json"
+    known_hosts = root / "local-e2e-proof-known_hosts"
     known_hosts.write_text("host key\n", encoding="utf-8")
+    known_hosts.chmod(0o600)
     config.write_text(
-        json.dumps({"schema": "sensai-local-e2e-ssh-v1", "host": "proof.example", "known_hosts": str(known_hosts)}),
+        json.dumps({"schema": "sensai-local-e2e-ssh-v1", "host": "proof.example"}),
         encoding="utf-8",
     )
     config.chmod(0o600)
     monkeypatch.setattr(production_module, "_OPERATOR_CONFIG", config)
+    monkeypatch.setattr(production_module, "_OPERATOR_CONFIG_ROOT", root)
+    monkeypatch.setattr(production_module, "_OPERATOR_KNOWN_HOSTS", known_hosts)
+    monkeypatch.setattr(production_module, "_strict_ssh_binary", lambda: None)
     seen: dict[str, object] = {}
 
     def ssh(argv: list[str], **kwargs: object) -> object:
@@ -127,6 +134,7 @@ def test_operator_proof_fails_closed_for_missing_config_bad_output_and_ssh_failu
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(production_module, "_OPERATOR_CONFIG", tmp_path / "missing.json")
+    monkeypatch.setattr(production_module, "_OPERATOR_CONFIG_ROOT", tmp_path)
     assert not SshOperatorProofVerifier().verifies("private")
 
 
