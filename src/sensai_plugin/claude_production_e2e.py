@@ -119,6 +119,7 @@ class TerminalResultKind(StrEnum):
     STRUCTURED_OUTPUT_RETRIES = "structured_output_retries"
     TURN_LIMIT = "turn_limit"
     PERMISSION = "permission"
+    API_ERROR = "api_error"
     OTHER = "other"
 
 
@@ -130,6 +131,7 @@ _TERMINAL_RESULT_SUBTYPES = {
     "error_max_turns": TerminalResultKind.TURN_LIMIT,
     "error_permission": TerminalResultKind.PERMISSION,
 }
+_TERMINAL_RESULT_REASONS = {"api_error": TerminalResultKind.API_ERROR}
 _MAX_TERMINAL_ERROR_COUNT = 32
 
 
@@ -289,8 +291,14 @@ def _terminal_result_summary(record: dict[str, object]) -> tuple[TerminalResultK
 
     subtype = record.get("subtype")
     known = _TERMINAL_RESULT_SUBTYPES.get(subtype) if isinstance(subtype, str) else None
+    reason = record.get("terminal_reason")
+    known_reason = _TERMINAL_RESULT_REASONS.get(reason) if isinstance(reason, str) else None
     errors = record.get("errors")
     error_count = min(len(errors), _MAX_TERMINAL_ERROR_COUNT) if isinstance(errors, list) else 0
+    if known_reason is not None:
+        return known_reason, error_count
+    if isinstance(reason, str):
+        return TerminalResultKind.OTHER, error_count
     if record.get("is_error") is True:
         if known is not None and known is not TerminalResultKind.SUCCESS:
             return known, error_count

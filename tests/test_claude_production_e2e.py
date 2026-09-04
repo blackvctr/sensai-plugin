@@ -554,6 +554,55 @@ def test_terminal_success_subtype_with_error_flag_is_not_treated_as_success() ->
         ProductionSensaiE2E._require_installation(evidence)
 
 
+def test_terminal_api_reason_is_allowlisted_and_discards_nested_sensitive_fields() -> None:
+    evidence = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "result",
+                "is_error": True,
+                "subtype": "error_during_execution",
+                "terminal_reason": "api_error",
+                "statusCode": 429,
+                "httpStatus": 429,
+                "result": "private prompt https://example.test/",
+                "errors": ["private token", {"session_id": "private-session"}],
+            },
+        ],
+        returncode=1,
+    )
+
+    assert evidence.terminal_result_kind is TerminalResultKind.API_ERROR
+    assert evidence.terminal_error_count == 2
+    with pytest.raises(
+        ProductionE2EError,
+        match="installation_claude_exit_terminal_api_error_at_before_marketplace",
+    ):
+        ProductionSensaiE2E._require_installation(evidence)
+    assert "429" not in str(evidence)
+    assert "example.test" not in str(evidence)
+    assert "private token" not in str(evidence)
+    assert "private-session" not in str(evidence)
+
+
+def test_unknown_terminal_reason_is_other_without_reading_terminal_text() -> None:
+    evidence = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "result",
+                "is_error": True,
+                "terminal_reason": "future_reason",
+                "result": "private terminal output",
+            },
+        ],
+        returncode=1,
+    )
+
+    assert evidence.terminal_result_kind is TerminalResultKind.OTHER
+    assert "private terminal output" not in str(evidence)
+
+
 def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:
     assert _is_exact_public_sensai_inventory(
         [{"id": "sensai@sensai", "scope": "user", "enabled": True}]
