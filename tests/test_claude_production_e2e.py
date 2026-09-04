@@ -20,6 +20,7 @@ from sensai_plugin.claude_production_e2e import (
     ProductionE2EError,
     ProductionE2EReport,
     ProductionSensaiE2E,
+    TerminalResultKind,
     TextEvidence,
     ToolKind,
     ToolResultEvidence,
@@ -92,6 +93,8 @@ def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEv
         record_kinds=(),
         exit_category=ExitCategory.CLEAN,
         exit_stage=ExitStage.UNKNOWN,
+        terminal_result_kind=TerminalResultKind.NONE,
+        terminal_error_count=0,
         stderr_seen=False,
     )
 
@@ -476,22 +479,62 @@ def test_generic_nonzero_exit_is_safe_and_unclassified() -> None:
         ProductionSensaiE2E._require_installation(evidence)
 
 
-def test_terminal_error_exit_uses_terminal_category_without_raw_content() -> None:
+@pytest.mark.parametrize(
+    ("subtype", "expected_kind", "label"),
+    [
+        ("error_during_execution", TerminalResultKind.EXECUTION, "terminal_execution"),
+        ("error_max_budget_usd", TerminalResultKind.BUDGET, "terminal_budget"),
+        (
+            "error_max_structured_output_retries",
+            TerminalResultKind.STRUCTURED_OUTPUT_RETRIES,
+            "terminal_structured_output_retries",
+        ),
+        ("error_max_turns", TerminalResultKind.TURN_LIMIT, "terminal_turn_limit"),
+        ("error_permission", TerminalResultKind.PERMISSION, "terminal_permission"),
+        ("unrecognized_error", TerminalResultKind.OTHER, "terminal_other"),
+    ],
+)
+def test_terminal_error_exit_uses_allowlisted_category_without_raw_content(
+    subtype: str, expected_kind: TerminalResultKind, label: str
+) -> None:
     evidence = _parse(
         [
             {"type": "system", "subtype": "init"},
-            {"type": "result", "is_error": True, "result": "private terminal detail"},
+            {
+                "type": "result",
+                "is_error": True,
+                "subtype": subtype,
+                "errors": ["private terminal detail", "private URL https://example.test/"],
+                "result": "private prompt and output",
+                "session_id": "private-session",
+            },
         ],
         returncode=1,
     )
     assert evidence.exit_category is ExitCategory.TERMINAL_ERROR
+    assert evidence.terminal_result_kind is expected_kind
+    assert evidence.terminal_error_count == 2
     assert evidence.exit_stage is ExitStage.BEFORE_MARKETPLACE
     with pytest.raises(
         ProductionE2EError,
-        match="installation_claude_exit_terminal_error_at_before_marketplace",
+        match=f"installation_claude_exit_{label}_at_before_marketplace",
     ):
         ProductionSensaiE2E._require_installation(evidence)
     assert "private terminal detail" not in str(evidence)
+    assert "private URL" not in str(evidence)
+    assert "private-session" not in str(evidence)
+
+
+def test_terminal_success_and_absent_terminal_result_remain_non_error() -> None:
+    success = _parse(
+        [{"type": "system", "subtype": "init"}, {"type": "result", "subtype": "success"}]
+    )
+    missing = _parse([{"type": "system", "subtype": "init"}])
+
+    assert success.terminal_result_kind is TerminalResultKind.SUCCESS
+    assert success.terminal_error_count == 0
+    assert missing.terminal_result_kind is TerminalResultKind.NONE
+    assert missing.terminal_error_count == 0
 
 
 def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:

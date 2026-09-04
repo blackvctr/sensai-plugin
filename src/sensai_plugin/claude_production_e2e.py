@@ -111,6 +111,28 @@ class ExitCategory(StrEnum):
     NONZERO_UNCLASSIFIED = "nonzero_unclassified"
 
 
+class TerminalResultKind(StrEnum):
+    NONE = "none"
+    SUCCESS = "success"
+    EXECUTION = "execution"
+    BUDGET = "budget"
+    STRUCTURED_OUTPUT_RETRIES = "structured_output_retries"
+    TURN_LIMIT = "turn_limit"
+    PERMISSION = "permission"
+    OTHER = "other"
+
+
+_TERMINAL_RESULT_SUBTYPES = {
+    "success": TerminalResultKind.SUCCESS,
+    "error_during_execution": TerminalResultKind.EXECUTION,
+    "error_max_budget_usd": TerminalResultKind.BUDGET,
+    "error_max_structured_output_retries": TerminalResultKind.STRUCTURED_OUTPUT_RETRIES,
+    "error_max_turns": TerminalResultKind.TURN_LIMIT,
+    "error_permission": TerminalResultKind.PERMISSION,
+}
+_MAX_TERMINAL_ERROR_COUNT = 32
+
+
 class ExitStage(StrEnum):
     BEFORE_MARKETPLACE = "before_marketplace"
     AFTER_MARKETPLACE_BEFORE_PLUGIN = "after_marketplace_before_plugin"
@@ -149,6 +171,8 @@ class AgentEvidence:
     record_kinds: tuple[str, ...]
     exit_category: ExitCategory
     exit_stage: ExitStage
+    terminal_result_kind: TerminalResultKind
+    terminal_error_count: int
     stderr_seen: bool
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
@@ -260,6 +284,20 @@ def _safe_tool_result_key(value: object) -> bytes | None:
     return hashlib.sha256(value.encode("utf-8")).digest()
 
 
+def _terminal_result_summary(record: dict[str, object]) -> tuple[TerminalResultKind, int]:
+    """Keep only a fixed terminal subtype and count, never its free-text details."""
+
+    subtype = record.get("subtype")
+    known = _TERMINAL_RESULT_SUBTYPES.get(subtype) if isinstance(subtype, str) else None
+    errors = record.get("errors")
+    error_count = min(len(errors), _MAX_TERMINAL_ERROR_COUNT) if isinstance(errors, list) else 0
+    if known is not None:
+        return known, error_count
+    if record.get("is_error") is True or isinstance(subtype, str):
+        return TerminalResultKind.OTHER, error_count
+    return TerminalResultKind.NONE, error_count
+
+
 def _assert_normal_browser_path(command: Sequence[str]) -> None:
     if "--no-browser" in command:
         raise ProductionE2EError("normal_login_path_required")
@@ -363,6 +401,8 @@ def _consume_stream(
     result_seen = False
     session_verified = False
     terminal_error = False
+    terminal_result_kind = TerminalResultKind.NONE
+    terminal_error_count = 0
     stderr_seen = False
     text_blocks: dict[int, _TextAccumulator] = {}
     tool_blocks: dict[int, _ToolAccumulator] = {}
@@ -392,7 +432,9 @@ def _consume_stream(
             result_seen, \
             session_verified, \
             stream_limit_exceeded, \
-            terminal_error
+            terminal_error, \
+            terminal_result_kind, \
+            terminal_error_count
         if not line:
             return
         event_count += 1
@@ -409,7 +451,11 @@ def _consume_stream(
             session_verified = True
         if isinstance(record, dict) and record.get("type") == "result":
             result_seen = True
-            terminal_error = record.get("is_error") is True or record.get("subtype") == "error"
+            terminal_result_kind, terminal_error_count = _terminal_result_summary(record)
+            terminal_error = terminal_result_kind not in {
+                TerminalResultKind.NONE,
+                TerminalResultKind.SUCCESS,
+            }
         if isinstance(record, dict) and record.get("type") == "user":
             message = record.get("message")
             content = message.get("content") if isinstance(message, dict) else None
@@ -575,6 +621,8 @@ def _consume_stream(
         record_kinds=tuple(record_kinds),
         exit_category=exit_category,
         exit_stage=_exit_stage(successful),
+        terminal_result_kind=terminal_result_kind,
+        terminal_error_count=terminal_error_count,
         stderr_seen=stderr_seen,
     )
 
@@ -816,8 +864,13 @@ class ProductionSensaiE2E:
         if evidence.unclosed_block:
             raise ProductionE2EError("installation_stream_unclosed_block")
         if evidence.returncode != 0:
+            category = (
+                f"terminal_{evidence.terminal_result_kind}"
+                if evidence.exit_category is ExitCategory.TERMINAL_ERROR
+                else evidence.exit_category
+            )
             raise ProductionE2EError(
-                f"installation_claude_exit_{evidence.exit_category}_at_{evidence.exit_stage}"
+                f"installation_claude_exit_{category}_at_{evidence.exit_stage}"
             )
         if not evidence.result_seen:
             raise ProductionE2EError("installation_terminal_result_missing")
