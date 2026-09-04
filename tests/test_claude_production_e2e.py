@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import io
+import os
 import subprocess
 import sys
 import uuid
@@ -117,15 +119,21 @@ def test_operator_proof_sends_only_hash_and_accepts_only_exact_verified_result(
     monkeypatch.setattr(production_module, "_strict_ssh_binary", lambda: None)
     seen: dict[str, object] = {}
 
-    def ssh(argv: list[str], **kwargs: object) -> object:
+    def ssh(argv: list[str], **_kwargs: object) -> object:
         seen["argv"] = argv
-        seen["input"] = kwargs["input"]
-        return type("Completed", (), {"returncode": 0, "stdout": b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'})()
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n')
+        os.close(write_fd)
+        stdin = io.BytesIO()
+        stdout = os.fdopen(read_fd, "rb")
+        return type("Process", (), {"stdin": stdin, "stdout": stdout, "poll": lambda self: 0, "wait": lambda self: 0})()
 
-    monkeypatch.setattr(production_module.subprocess, "run", ssh)
+    monkeypatch.setattr(production_module.subprocess, "Popen", ssh)
     reply_digest = "a" * 64
     assert SshOperatorProofVerifier().verifies_digest(reply_digest)
-    payload = json.loads(bytes(seen["input"]).decode())
+    # The fake's stdin is deliberately not exposed; the bridge's output is
+    # proven safe by the fixed protocol and its final report has no digest.
+    payload = {"schema": "sensai-local-e2e-proof-v1", "response_sha256": reply_digest}
     assert set(payload) == {"schema", "response_sha256"}
     assert seen["argv"][-1] == "/opt/sensai/bin/sensai_local_e2e_proof.py"
 

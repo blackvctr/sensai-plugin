@@ -70,6 +70,7 @@ _OPERATOR_CONFIG_ROOT = _OPERATOR_CONFIG.parent
 _OPERATOR_KNOWN_HOSTS = _OPERATOR_CONFIG_ROOT / "local-e2e-proof-known_hosts"
 _SSH_EXECUTABLE = Path("/usr/bin/ssh")
 _REMOTE_PROOF_COMMAND = "/opt/sensai/bin/sensai_local_e2e_proof.py"
+_MAX_OPERATOR_PROOF_OUTPUT = 256
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
@@ -231,13 +232,38 @@ class SshOperatorProofVerifier:
             separators=(",", ":"),
         ).encode() + b"\n"
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 [str(_SSH_EXECUTABLE), "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={_OPERATOR_KNOWN_HOSTS}", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "RemoteCommand=none", "-o", "ControlMaster=no", "-o", "ForwardAgent=no", config["host"], _REMOTE_PROOF_COMMAND],
-                input=payload, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=60,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             )
-        except (OSError, subprocess.TimeoutExpired):
+            assert process.stdin is not None and process.stdout is not None
+            process.stdin.write(payload)
+            process.stdin.close()
+            os.set_blocking(process.stdout.fileno(), False)
+            output = bytearray()
+            deadline = time.monotonic() + 60
+            selector = selectors.DefaultSelector()
+            selector.register(process.stdout, selectors.EVENT_READ)
+            try:
+                while process.poll() is None or selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _terminate(process)
+                        return False
+                    for key, _ in selector.select(remaining):
+                        chunk = os.read(key.fd, _MAX_OPERATOR_PROOF_OUTPUT + 1)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        output.extend(chunk)
+                        if len(output) > _MAX_OPERATOR_PROOF_OUTPUT:
+                            _terminate(process)
+                            return False
+            finally:
+                selector.close()
+            return process.wait() == 0 and bytes(output) == b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'
+        except (OSError, BrokenPipeError):
             return False
-        return completed.returncode == 0 and completed.stdout == b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'
 
 
 def _strict_private_file(path: Path) -> bytes:
