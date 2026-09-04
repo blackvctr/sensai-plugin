@@ -8,6 +8,8 @@ with the returned environment.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -285,6 +287,7 @@ def _prepare_provision(
     source_trust: SourceTrust,
 ) -> tuple[ProvisionDescription, bytes]:
     target = _assert_profile_location(profile)
+    _assert_no_symlink_components(source_credentials)
     if source_trust is SourceTrust.PRIVATE_LOCAL_SOURCE:
         _assert_private_linux_source_location(source_credentials)
     credentials = _minimal_credentials(
@@ -430,6 +433,36 @@ def _remove_owned_tree(root: Path, expected_identity: tuple[int, int]) -> None:
     shutil.rmtree(root)
 
 
+def _publish_private_profile(staging: Path, target: Path) -> None:
+    """Publish a complete staging directory without replacing a concurrent target."""
+
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError as error:
+        raise ClaudeE2EProfileError("atomic private profile publication is unavailable") from error
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100,  # AT_FDCWD
+        os.fsencode(staging),
+        -100,  # AT_FDCWD
+        os.fsencode(target),
+        1,  # RENAME_NOREPLACE
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise ClaudeE2EProfileError("persistent profile already exists")
+    raise ClaudeE2EProfileError("atomic private profile publication failed")
+
+
 def _create_profile(
     description: ProvisionDescription,
     credentials: bytes,
@@ -440,25 +473,26 @@ def _create_profile(
     root.parent.mkdir(parents=True, exist_ok=True)
     created_identity: tuple[int, int] | None = None
     owner_nonce: str | None = None
+    staging: Path | None = None
+    published = False
     try:
-        try:
-            root.mkdir(mode=0o700)
-        except FileExistsError as error:
-            raise ClaudeE2EProfileError("persistent profile already exists") from error
-        created_identity = _directory_identity(root)
+        if root.exists() or root.is_symlink():
+            raise ClaudeE2EProfileError("persistent profile already exists")
+        staging = Path(tempfile.mkdtemp(prefix=f".{root.name}.staging-", dir=root.parent))
+        staging.chmod(0o700)
+        _assert_observed_mode(staging, 0o700)
+        created_identity = _directory_identity(staging)
         owner_nonce = secrets.token_hex(32)
-        _write_private(root / _OWNER_MARKER_NAME, _owner_marker(owner_nonce))
-        root.chmod(0o700)
-        _assert_observed_mode(root, 0o700)
-        with _profile_lock(root):
-            baseline = root / "baseline"
+        _write_private(staging / _OWNER_MARKER_NAME, _owner_marker(owner_nonce))
+        with _profile_lock(staging):
+            baseline = staging / "baseline"
             config = baseline / "config"
             _mkdir_private(baseline)
             _mkdir_private(config)
-            _mkdir_private(root / "runs")
+            _mkdir_private(staging / "runs")
             _write_private(config / ".credentials.json", credentials)
             _write_private(
-                root / "manifest.json",
+                staging / "manifest.json",
                 (
                     json.dumps(
                         _profile_manifest(credentials, description.source_trust), sort_keys=True
@@ -466,16 +500,22 @@ def _create_profile(
                     + "\n"
                 ).encode(),
             )
+        _load_profile(staging)
+        _publish_private_profile(staging, root)
+        published = True
     except BaseException:
         if (
-            created_identity is not None
+            staging is not None
+            and created_identity is not None
             and (
-                (owner_nonce is not None and _has_owner_marker(root, owner_nonce))
-                or _is_empty_owned_directory(root, created_identity)
+                (owner_nonce is not None and _has_owner_marker(staging, owner_nonce))
+                or _is_empty_owned_directory(staging, created_identity)
             )
         ):
-            _remove_owned_tree(root, created_identity)
+            _remove_owned_tree(staging, created_identity)
         raise
+    if not published:  # pragma: no cover - guards future control-flow edits.
+        raise AssertionError("private profile was not published")
     return ClaudeE2EProfile(root)
 
 

@@ -23,6 +23,8 @@ after the person has approved the migration, reduces it to the Claude login in
 memory, and writes a new private baseline. It accepts no arbitrary source path,
 cannot be used for a dry run, and never refreshes the baseline later. This is a
 deliberate trust event, not a claim that the shared source is protected.
+It still rejects a symlink in the configured source path: the configured path
+must point directly to the already approved current directory before migration.
 
 At provisioning time, protected local metadata records a one-way fingerprint of
 the exact minimal login record. Before every fresh test run, the fingerprint

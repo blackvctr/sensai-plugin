@@ -224,6 +224,20 @@ def test_one_time_current_migration_rejects_invalid_source_without_creating_targ
     assert not _profile_path().exists()
 
 
+def test_one_time_current_migration_rejects_a_symlinked_configured_source_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _current_unsafe_source()
+    linked_parent = Path.home() / ".linked-current-source"
+    linked_parent.symlink_to(source.parent)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(linked_parent))
+
+    with pytest.raises(ClaudeE2EProfileError, match="symlinks"):
+        provision_trusted_current_profile(_profile_path())
+
+    assert not _profile_path().exists()
+
+
 def test_one_time_current_migration_rejects_a_source_changed_before_opening(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -264,6 +278,51 @@ def test_one_time_current_migration_removes_only_its_partial_target_on_write_fai
         provision_trusted_current_profile(_profile_path())
 
     assert not _profile_path().exists()
+
+
+def test_profile_target_stays_absent_until_complete_staging_profile_is_published(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _current_unsafe_source()
+    target = _profile_path()
+    original_publish = profile_module._publish_private_profile
+    observations: list[Path] = []
+
+    def inspect_then_publish(staging: Path, final_target: Path) -> None:
+        assert final_target == target
+        assert not final_target.exists()
+        inspected = profile_module._load_profile(staging)
+        assert inspected.baseline_credentials.is_file()
+        observations.append(staging)
+        original_publish(staging, final_target)
+
+    monkeypatch.setattr(profile_module, "_publish_private_profile", inspect_then_publish)
+    profile = provision_trusted_current_profile(target)
+
+    assert observations
+    assert profile.root == target and target.is_dir()
+    assert not any(target.parent.glob(f".{target.name}.staging-*"))
+    assert source.exists()
+
+
+def test_profile_publish_failure_removes_owned_staging_without_creating_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _current_unsafe_source()
+    target = _profile_path()
+
+    def fail_publish(staging: Path, final_target: Path) -> None:
+        assert not final_target.exists()
+        assert profile_module._load_profile(staging).baseline_credentials.is_file()
+        raise ClaudeE2EProfileError("atomic private profile publication failed")
+
+    monkeypatch.setattr(profile_module, "_publish_private_profile", fail_publish)
+
+    with pytest.raises(ClaudeE2EProfileError, match="atomic private profile publication failed"):
+        provision_trusted_current_profile(target)
+
+    assert not target.exists()
+    assert not any(target.parent.glob(f".{target.name}.staging-*"))
 
 
 def test_one_time_current_migration_cli_requires_explicit_provision_and_never_prints_login(
@@ -629,27 +688,20 @@ def test_provision_does_not_remove_directory_created_by_another_operation(
     source = _source_path(tmp_path)
     _credentials(source)
     target = _profile_path()
-    original_mkdir = Path.mkdir
+    original_publish = profile_module._publish_private_profile
 
-    def another_operation_creates(
-        path: Path,
-        mode: int = 0o777,
-        parents: bool = False,
-        exist_ok: bool = False,
-    ) -> None:
-        if path != target:
-            original_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
-            return
-        original_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
-        (path / "belongs-to-someone-else").write_text("keep", encoding="utf-8")
-        raise FileExistsError(path)
+    def another_operation_creates(staging: Path, final_target: Path) -> None:
+        final_target.mkdir(mode=0o700)
+        (final_target / "belongs-to-someone-else").write_text("keep", encoding="utf-8")
+        original_publish(staging, final_target)
 
-    monkeypatch.setattr(Path, "mkdir", another_operation_creates)
+    monkeypatch.setattr(profile_module, "_publish_private_profile", another_operation_creates)
 
     with pytest.raises(ClaudeE2EProfileError, match="already exists"):
         provision_profile(target, source)
 
     assert (target / "belongs-to-someone-else").read_text(encoding="utf-8") == "keep"
+    assert not any(target.parent.glob(f".{target.name}.staging-*"))
 
 
 def test_provision_rejects_profile_when_private_modes_cannot_be_observed(
