@@ -15,6 +15,8 @@ from sensai_plugin.claude_e2e_profile import provision_profile
 from sensai_plugin.claude_production_e2e import (
     AgentEvidence,
     ClaudeDriver,
+    ExitCategory,
+    ExitStage,
     ProductionE2EError,
     ProductionE2EReport,
     ProductionSensaiE2E,
@@ -88,6 +90,9 @@ def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEv
             else tuple(tool.value for tool in tools)
         ),
         record_kinds=(),
+        exit_category=ExitCategory.CLEAN,
+        exit_stage=ExitStage.UNKNOWN,
+        stderr_seen=False,
     )
 
 
@@ -418,6 +423,57 @@ def test_parser_marks_invalid_json_and_invalid_block_stop_as_malformed() -> None
     assert unknown.record_kinds == ("system", "stream:other", "result")
     with pytest.raises(ProductionE2EError, match="installation_stream_malformed"):
         ProductionSensaiE2E._require_installation(invalid_stop)
+
+
+def test_nonzero_exit_uses_only_fixed_tool_stage_and_category() -> None:
+    evidence = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "tool",
+                        "input": {
+                            "command": "claude plugin marketplace add blackvctr/sensai-plugin"
+                        },
+                    },
+                },
+            },
+            {"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}},
+            {
+                "type": "user",
+                "message": {
+                    "content": [{"type": "tool_result", "tool_use_id": "tool", "is_error": True}]
+                },
+            },
+            {"type": "result", "is_error": True},
+        ],
+        returncode=7,
+    )
+    assert evidence.exit_category is ExitCategory.TOOL_RESULT_ERROR
+    assert evidence.exit_stage is ExitStage.BEFORE_MARKETPLACE
+    assert not evidence.stderr_seen
+    with pytest.raises(
+        ProductionE2EError,
+        match="installation_claude_exit_tool_result_error_at_before_marketplace",
+    ):
+        ProductionSensaiE2E._require_installation(evidence)
+    assert "blackvctr" not in str(evidence)
+
+
+def test_generic_nonzero_exit_is_safe_and_unclassified() -> None:
+    evidence = _parse([{"type": "system", "subtype": "init"}, {"type": "result"}], returncode=2)
+    assert evidence.exit_category is ExitCategory.NONZERO_UNCLASSIFIED
+    assert evidence.exit_stage is ExitStage.BEFORE_MARKETPLACE
+    with pytest.raises(
+        ProductionE2EError,
+        match="installation_claude_exit_nonzero_unclassified_at_before_marketplace",
+    ):
+        ProductionSensaiE2E._require_installation(evidence)
 
 
 def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:

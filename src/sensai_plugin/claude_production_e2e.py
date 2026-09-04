@@ -104,6 +104,21 @@ class ToolKind(StrEnum):
     OTHER = "other"
 
 
+class ExitCategory(StrEnum):
+    CLEAN = "clean"
+    TOOL_RESULT_ERROR = "tool_result_error"
+    TERMINAL_ERROR = "terminal_error"
+    NONZERO_UNCLASSIFIED = "nonzero_unclassified"
+
+
+class ExitStage(StrEnum):
+    BEFORE_MARKETPLACE = "before_marketplace"
+    AFTER_MARKETPLACE_BEFORE_PLUGIN = "after_marketplace_before_plugin"
+    AFTER_PLUGIN_BEFORE_LOGIN = "after_plugin_before_login"
+    AFTER_LOGIN_BEFORE_NEW_CHAT = "after_login_before_new_chat"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class TextEvidence:
     matches_expected: bool
@@ -132,6 +147,9 @@ class AgentEvidence:
     tool_results: tuple[ToolResultEvidence, ...]
     event_order: tuple[str, ...]
     record_kinds: tuple[str, ...]
+    exit_category: ExitCategory
+    exit_stage: ExitStage
+    stderr_seen: bool
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -293,6 +311,18 @@ def _verify_session(record: object, expected_session: uuid.UUID) -> bool:
     )
 
 
+def _exit_stage(successful: Sequence[ToolKind]) -> ExitStage:
+    if ToolKind.MARKETPLACE_ADD not in successful:
+        return ExitStage.BEFORE_MARKETPLACE
+    if ToolKind.PLUGIN_INSTALL not in successful:
+        return ExitStage.AFTER_MARKETPLACE_BEFORE_PLUGIN
+    if ToolKind.LOGIN not in successful:
+        return ExitStage.AFTER_PLUGIN_BEFORE_LOGIN
+    if ToolKind.NEW_CHAT_URI not in successful:
+        return ExitStage.AFTER_LOGIN_BEFORE_NEW_CHAT
+    return ExitStage.UNKNOWN
+
+
 def _terminate(process: subprocess.Popen[bytes]) -> None:
     with suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGTERM)
@@ -317,7 +347,11 @@ def _consume_stream(
     descriptor = process.stdout.fileno()
     os.set_blocking(descriptor, False)
     selector = selectors.DefaultSelector()
-    selector.register(descriptor, selectors.EVENT_READ)
+    selector.register(descriptor, selectors.EVENT_READ, "stdout")
+    stderr = getattr(process, "stderr", None)
+    if stderr is not None:
+        os.set_blocking(stderr.fileno(), False)
+        selector.register(stderr.fileno(), selectors.EVENT_READ, "stderr")
     deadline = time.monotonic() + timeout_seconds
     pending = bytearray()
     total_bytes = 0
@@ -328,6 +362,8 @@ def _consume_stream(
     timed_out = False
     result_seen = False
     session_verified = False
+    terminal_error = False
+    stderr_seen = False
     text_blocks: dict[int, _TextAccumulator] = {}
     tool_blocks: dict[int, _ToolAccumulator] = {}
     outstanding: dict[bytes, ToolKind] = {}
@@ -350,7 +386,13 @@ def _consume_stream(
         return "stream:other"
 
     def consume(line: bytes) -> None:
-        nonlocal event_count, malformed, result_seen, session_verified, stream_limit_exceeded
+        nonlocal \
+            event_count, \
+            malformed, \
+            result_seen, \
+            session_verified, \
+            stream_limit_exceeded, \
+            terminal_error
         if not line:
             return
         event_count += 1
@@ -367,6 +409,7 @@ def _consume_stream(
             session_verified = True
         if isinstance(record, dict) and record.get("type") == "result":
             result_seen = True
+            terminal_error = record.get("is_error") is True or record.get("subtype") == "error"
         if isinstance(record, dict) and record.get("type") == "user":
             message = record.get("message")
             content = message.get("content") if isinstance(message, dict) else None
@@ -470,9 +513,16 @@ def _consume_stream(
             ready = selector.select(0 if process.poll() is not None else remaining)
             if not ready:
                 continue
+            key, _ = ready[0]
             try:
-                chunk = os.read(descriptor, MAX_STREAM_LINE_BYTES + 1)
+                chunk = os.read(key.fd, MAX_STREAM_LINE_BYTES + 1)
             except BlockingIOError:
+                continue
+            if key.data == "stderr":
+                if chunk:
+                    stderr_seen = True
+                else:
+                    selector.unregister(key.fileobj)
                 continue
             if not chunk:
                 if pending:
@@ -500,6 +550,15 @@ def _consume_stream(
             _terminate(process)
     if text_blocks or tool_blocks:
         unclosed_block = True
+    successful = tuple(item.kind for item in results if item.succeeded)
+    if any(not item.succeeded for item in results):
+        exit_category = ExitCategory.TOOL_RESULT_ERROR
+    elif terminal_error:
+        exit_category = ExitCategory.TERMINAL_ERROR
+    elif process.returncode not in {None, 0}:
+        exit_category = ExitCategory.NONZERO_UNCLASSIFIED
+    else:
+        exit_category = ExitCategory.CLEAN
     return AgentEvidence(
         result_seen=result_seen,
         session_verified=session_verified,
@@ -510,10 +569,13 @@ def _consume_stream(
         returncode=process.wait(),
         text_messages=tuple(texts),
         tool_calls=tuple(calls),
-        successful_tool_results=tuple(item.kind for item in results if item.succeeded),
+        successful_tool_results=successful,
         tool_results=tuple(results),
         event_order=tuple(order),
         record_kinds=tuple(record_kinds),
+        exit_category=exit_category,
+        exit_stage=_exit_stage(successful),
+        stderr_seen=stderr_seen,
     )
 
 
@@ -537,7 +599,7 @@ class SubprocessClaudeDriver:
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 start_new_session=True,
             )
         except OSError as error:
@@ -754,7 +816,9 @@ class ProductionSensaiE2E:
         if evidence.unclosed_block:
             raise ProductionE2EError("installation_stream_unclosed_block")
         if evidence.returncode != 0:
-            raise ProductionE2EError("installation_claude_exit_nonzero")
+            raise ProductionE2EError(
+                f"installation_claude_exit_{evidence.exit_category}_at_{evidence.exit_stage}"
+            )
         if not evidence.result_seen:
             raise ProductionE2EError("installation_terminal_result_missing")
         if not evidence.session_verified:
