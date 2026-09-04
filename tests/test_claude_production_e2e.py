@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import uuid
 from collections.abc import Callable, Sequence
@@ -22,6 +23,7 @@ from sensai_plugin.claude_production_e2e import (
     ToolResultEvidence,
     _assert_normal_browser_path,
     _classify_bash_command,
+    _consume_stream,
     _is_exact_public_sensai_inventory,
     fetch_public_readme_contract,
 )
@@ -35,7 +37,12 @@ from sensai_plugin.installation_e2e_contract import (
 def _linux_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     home.mkdir()
+    outside_development = tmp_path / "outside-development"
+    outside_development.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    import sensai_plugin.claude_e2e_profile as profile_module
+
+    monkeypatch.setattr(profile_module, "DEVELOPMENT_ROOT", outside_development)
 
 
 def _profile() -> Path:
@@ -67,6 +74,8 @@ def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEv
         result_seen=True,
         session_verified=True,
         malformed=False,
+        unclosed_block=False,
+        stream_limit_exceeded=False,
         timed_out=False,
         returncode=0,
         text_messages=texts,
@@ -78,6 +87,7 @@ def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEv
             if texts
             else tuple(tool.value for tool in tools)
         ),
+        record_kinds=(),
     )
 
 
@@ -173,6 +183,41 @@ def _runner(profile: Path, driver: ClaudeDriver) -> ProductionSensaiE2E:
     )
 
 
+class _StreamProcess:
+    def __init__(self, payload: bytes, *, returncode: int = 0) -> None:
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, payload)
+        os.close(write_fd)
+        self.stdout = os.fdopen(read_fd, "rb")
+        self.returncode = returncode
+        self.pid = os.getpid()
+        self._first_poll = True
+
+    def poll(self) -> int | None:
+        if self._first_poll:
+            self._first_poll = False
+            return None
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+
+def _parse(records: list[dict[str, object]], *, returncode: int = 0) -> AgentEvidence:
+    session = uuid.uuid4()
+    for record in records:
+        if record.get("type") == "system":
+            record["session_id"] = str(session)
+    payload = b"".join(json.dumps(record).encode() + b"\n" for record in records)
+    return _consume_stream(
+        _StreamProcess(payload, returncode=returncode),  # type: ignore[arg-type]
+        timeout_seconds=1,
+        expected_visible_messages=(),
+        expected_session=session,
+        expected_new_chat_uri=None,
+    )
+
+
 def test_installation_route_stops_after_public_plugin_connection_and_new_chat() -> None:
     profile = _profile()
     driver = _successful_driver()
@@ -261,6 +306,85 @@ def test_bash_classifier_requires_real_installation_command_semantics() -> None:
         is ToolKind.PLUGIN_INSTALL
     )
     assert _classify_bash_command(f"xdg-open {uri!r}", uri) is ToolKind.NEW_CHAT_URI
+
+
+def test_parser_handles_empty_initial_tool_input_and_partial_json() -> None:
+    evidence = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "tool_use", "id": "tool", "input": {}},
+                },
+            },
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "partial_json": (
+                            '{"command":"claude plugin marketplace add blackvctr/sensai-plugin"}'
+                        )
+                    },
+                },
+            },
+            {"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}},
+            {
+                "type": "user",
+                "message": {
+                    "content": [{"type": "tool_result", "tool_use_id": "tool", "is_error": False}]
+                },
+            },
+            {"type": "result"},
+        ]
+    )
+    assert evidence.result_seen and not evidence.malformed and not evidence.unclosed_block
+    assert evidence.has_successful(ToolKind.MARKETPLACE_ADD)
+    assert evidence.record_kinds == (
+        "system",
+        "stream:content_block_start",
+        "stream:content_block_delta",
+        "stream:content_block_stop",
+        "user",
+        "result",
+    )
+
+
+def test_parser_keeps_terminal_nonzero_unclosed_and_limit_categories_distinct(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = _parse([{"type": "system", "subtype": "init"}])
+    nonzero = _parse([{"type": "system", "subtype": "init"}, {"type": "result"}], returncode=3)
+    unclosed = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text"},
+                },
+            },
+            {"type": "result"},
+        ]
+    )
+    import sensai_plugin.claude_production_e2e as module
+
+    monkeypatch.setattr(module, "MAX_STREAM_EVENTS", 1)
+    limited = _parse([{"type": "system", "subtype": "init"}, {"type": "result"}])
+    with pytest.raises(ProductionE2EError, match="installation_terminal_result_missing"):
+        ProductionSensaiE2E._require_installation(missing)
+    with pytest.raises(ProductionE2EError, match="installation_claude_exit_nonzero"):
+        ProductionSensaiE2E._require_installation(nonzero)
+    with pytest.raises(ProductionE2EError, match="installation_stream_unclosed_block"):
+        ProductionSensaiE2E._require_installation(unclosed)
+    with pytest.raises(ProductionE2EError, match="installation_stream_limit_exceeded"):
+        ProductionSensaiE2E._require_installation(limited)
 
 
 def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:

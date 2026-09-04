@@ -122,6 +122,8 @@ class AgentEvidence:
     result_seen: bool
     session_verified: bool
     malformed: bool
+    unclosed_block: bool
+    stream_limit_exceeded: bool
     timed_out: bool
     returncode: int
     text_messages: tuple[TextEvidence, ...]
@@ -129,6 +131,7 @@ class AgentEvidence:
     successful_tool_results: tuple[ToolKind, ...]
     tool_results: tuple[ToolResultEvidence, ...]
     event_order: tuple[str, ...]
+    record_kinds: tuple[str, ...]
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -320,6 +323,8 @@ def _consume_stream(
     total_bytes = 0
     event_count = 0
     malformed = False
+    unclosed_block = False
+    stream_limit_exceeded = False
     timed_out = False
     result_seen = False
     session_verified = False
@@ -330,20 +335,32 @@ def _consume_stream(
     calls: list[ToolKind] = []
     results: list[ToolResultEvidence] = []
     order: list[str] = []
+    record_kinds: list[str] = []
+
+    def record_kind(record: object) -> str:
+        if not isinstance(record, dict):
+            return "other"
+        item_type = record.get("type")
+        if isinstance(item_type, str) and item_type in {"system", "result", "user"}:
+            return item_type
+        event = record.get("event") if item_type == "stream_event" else None
+        event_type = event.get("type") if isinstance(event, dict) else None
+        return f"stream:{event_type}" if isinstance(event_type, str) else "other"
 
     def consume(line: bytes) -> None:
-        nonlocal event_count, malformed, result_seen, session_verified
+        nonlocal event_count, malformed, result_seen, session_verified, stream_limit_exceeded
         if not line:
             return
         event_count += 1
         if event_count > MAX_STREAM_EVENTS:
-            malformed = True
+            stream_limit_exceeded = True
             return
         try:
             record = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             malformed = True
             return
+        record_kinds.append(record_kind(record))
         if _verify_session(record, expected_session):
             session_verified = True
         if isinstance(record, dict) and record.get("type") == "result":
@@ -375,7 +392,11 @@ def _consume_stream(
                 text_blocks[index] = _TextAccumulator.new()
             elif block.get("type") == "tool_use":
                 input_value = block.get("input")
-                initial = [json.dumps(input_value)] if isinstance(input_value, dict) else []
+                initial = (
+                    [json.dumps(input_value)]
+                    if isinstance(input_value, dict) and input_value
+                    else []
+                )
                 tool_blocks[index] = _ToolAccumulator(
                     _safe_tool_result_key(block.get("id")), initial
                 )
@@ -402,7 +423,7 @@ def _consume_stream(
         if event_type == "content_block_stop":
             index = event.get("index")
             if not isinstance(index, int):
-                malformed = True
+                stream_limit_exceeded = True
                 return
             text = text_blocks.pop(index, None)
             if text is not None:
@@ -457,7 +478,7 @@ def _consume_stream(
                 break
             total_bytes += len(chunk)
             if total_bytes > MAX_STREAM_BYTES:
-                malformed = True
+                stream_limit_exceeded = True
                 break
             pending.extend(chunk)
             if len(pending) > MAX_STREAM_LINE_BYTES and b"\n" not in pending:
@@ -476,11 +497,13 @@ def _consume_stream(
         if process.poll() is None:
             _terminate(process)
     if text_blocks or tool_blocks:
-        malformed = True
+        unclosed_block = True
     return AgentEvidence(
         result_seen=result_seen,
         session_verified=session_verified,
         malformed=malformed,
+        unclosed_block=unclosed_block,
+        stream_limit_exceeded=stream_limit_exceeded,
         timed_out=timed_out,
         returncode=process.wait(),
         text_messages=tuple(texts),
@@ -488,6 +511,7 @@ def _consume_stream(
         successful_tool_results=tuple(item.kind for item in results if item.succeeded),
         tool_results=tuple(results),
         event_order=tuple(order),
+        record_kinds=tuple(record_kinds),
     )
 
 
@@ -721,8 +745,16 @@ class ProductionSensaiE2E:
     def _require_installation(evidence: AgentEvidence) -> None:
         if evidence.timed_out:
             raise ProductionE2EError("installation_timed_out")
-        if evidence.malformed or evidence.returncode != 0 or not evidence.result_seen:
-            raise ProductionE2EError("installation_stream_invalid")
+        if evidence.stream_limit_exceeded:
+            raise ProductionE2EError("installation_stream_limit_exceeded")
+        if evidence.malformed:
+            raise ProductionE2EError("installation_stream_malformed")
+        if evidence.unclosed_block:
+            raise ProductionE2EError("installation_stream_unclosed_block")
+        if evidence.returncode != 0:
+            raise ProductionE2EError("installation_claude_exit_nonzero")
+        if not evidence.result_seen:
+            raise ProductionE2EError("installation_terminal_result_missing")
         if not evidence.session_verified:
             raise ProductionE2EError("installation_session_not_verified")
         if len(evidence.text_messages) != 2 or not all(
