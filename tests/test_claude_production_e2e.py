@@ -476,6 +476,24 @@ def test_generic_nonzero_exit_is_safe_and_unclassified() -> None:
         ProductionSensaiE2E._require_installation(evidence)
 
 
+def test_terminal_error_exit_uses_terminal_category_without_raw_content() -> None:
+    evidence = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {"type": "result", "is_error": True, "result": "private terminal detail"},
+        ],
+        returncode=1,
+    )
+    assert evidence.exit_category is ExitCategory.TERMINAL_ERROR
+    assert evidence.exit_stage is ExitStage.BEFORE_MARKETPLACE
+    with pytest.raises(
+        ProductionE2EError,
+        match="installation_claude_exit_terminal_error_at_before_marketplace",
+    ):
+        ProductionSensaiE2E._require_installation(evidence)
+    assert "private terminal detail" not in str(evidence)
+
+
 def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:
     assert _is_exact_public_sensai_inventory(
         [{"id": "sensai@sensai", "scope": "user", "enabled": True}]
