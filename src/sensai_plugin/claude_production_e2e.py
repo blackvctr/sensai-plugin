@@ -157,8 +157,15 @@ class SensaiReplyKind(StrEnum):
     """Only safe classifications of an observed tell_sensai result."""
 
     INITIAL_DISCOVERY = "initial_discovery"
-    TELEGRAM_COMPOSED = "telegram_composed"
+    INSTRUCTION_COMPOSED = "instruction_composed"
     OTHER = "other"
+
+
+class TelegramProvenanceStatus(StrEnum):
+    """Whether the optional, stricter server-side response proof ran."""
+
+    NOT_REQUESTED = "not_requested"
+    VERIFIED = "verified"
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +421,23 @@ class ProductionE2EReport:
     telegram_started: bool
     telegram_continued: bool
     forget_me_completed: bool
+    telegram_provenance: TelegramProvenanceStatus
+
+    @property
+    def complete(self) -> bool:
+        """All required checks completed; provenance can deliberately be optional."""
+
+        return all(
+            (
+                self.installation_messages_exact,
+                self.normal_login_started,
+                self.normal_login_completed,
+                self.sensai_connection_verified,
+                self.telegram_started,
+                self.telegram_continued,
+                self.forget_me_completed,
+            )
+        )
 
 
 class ClaudeDriver(Protocol):
@@ -707,27 +731,15 @@ def _new_tool_accumulator(block: object) -> _ToolAccumulator:
     return _ToolAccumulator(_direct_tool_kind(block), _safe_tool_result_key(identifier), initial)
 
 
-def _telegram_body() -> str | None:
-    """Exact production article proof needs response-time server provenance.
-
-    Drive content and the active snapshot can move independently, so neither a
-    local article nor a later snapshot can prove what was delivered.  Keep the
-    value unavailable until the server returns pinned response provenance.
-    """
-
-    return None
-
-
 def _sensai_reply_kind(content: object) -> SensaiReplyKind:
     text = content if isinstance(content, str) else None
     if text == _INITIAL_DISCOVERY_REPLY:
         return SensaiReplyKind.INITIAL_DISCOVERY
-    body = _telegram_body()
     delimiter = "\n\nInstruction:\n"
-    if body is not None and text is not None and text.count(delimiter) == 1:
+    if text is not None and text.count(delimiter) == 1:
         prefix, _, article = text.partition(delimiter)
-        if prefix and article == body:
-            return SensaiReplyKind.TELEGRAM_COMPOSED
+        if prefix.strip() and article.strip():
+            return SensaiReplyKind.INSTRUCTION_COMPOSED
     return SensaiReplyKind.OTHER
 
 
@@ -1016,7 +1028,10 @@ class ProductionSensaiE2E:
         self._driver = driver or SubprocessClaudeDriver()
         self._contract_loader = contract_loader
         self._executable_resolver = executable_resolver
-        self._operator_proof = operator_proof or SshOperatorProofVerifier()
+        # A normal local E2E proves the public user path only.  Server-side
+        # provenance is a distinct, explicit stricter mode; it must not add an
+        # SSH/key prerequisite to ordinary installation acceptance.
+        self._operator_proof = operator_proof
 
     def run(self) -> ProductionE2EReport:
         """Install, authenticate, consult Telegram, forget, then remove local state."""
@@ -1137,11 +1152,19 @@ class ProductionSensaiE2E:
                 telegram_continuation,
                 ToolKind.TELL_SENSAI,
                 "telegram_continuation",
-                None,
+                SensaiReplyKind.INSTRUCTION_COMPOSED,
             )
-            response_sha256 = telegram_continuation.successful_reply_digest(ToolKind.TELL_SENSAI)
-            if response_sha256 is None or not self._operator_proof.verifies_digest(response_sha256):
-                raise ProductionE2EError("telegram_operator_proof_not_verified")
+            provenance = TelegramProvenanceStatus.NOT_REQUESTED
+            if self._operator_proof is not None:
+                response_sha256 = telegram_continuation.successful_reply_digest(
+                    ToolKind.TELL_SENSAI
+                )
+                if (
+                    response_sha256 is None
+                    or not self._operator_proof.verifies_digest(response_sha256)
+                ):
+                    raise ProductionE2EError("telegram_operator_proof_not_verified")
+                provenance = TelegramProvenanceStatus.VERIFIED
         except ProductionE2EError as error:
             primary_error = error
         finally:
@@ -1181,6 +1204,7 @@ class ProductionSensaiE2E:
             telegram_started=True,
             telegram_continued=True,
             forget_me_completed=cleanup_completed,
+            telegram_provenance=provenance,
         )
 
     @staticmethod

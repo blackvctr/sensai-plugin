@@ -3,12 +3,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import runpy
 import subprocess
 import sys
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -19,10 +21,12 @@ from sensai_plugin.claude_production_e2e import (
     AgentEvidence,
     ClaudeDriver,
     ProductionE2EError,
+    ProductionE2EReport,
     ProductionSensaiE2E,
     SensaiReplyKind,
     SshOperatorProofVerifier,
     SubprocessClaudeDriver,
+    TelegramProvenanceStatus,
     TextEvidence,
     ToolKind,
     ToolResultEvidence,
@@ -30,6 +34,7 @@ from sensai_plugin.claude_production_e2e import (
     _classify_bash_command,
     _consume_stream,
     _is_exact_public_sensai_inventory,
+    _sensai_reply_kind,
     fetch_public_readme_contract,
 )
 from sensai_plugin.installation_e2e_contract import _public_contract_from_markdown
@@ -816,10 +821,120 @@ def _successful_driver() -> _FakeDriver:
                 texts=(_text(expected=True), _text(expected=True)),
             ),
             _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.INITIAL_DISCOVERY),
+            _evidence(
+                ToolKind.TELL_SENSAI,
+                sensai_reply=SensaiReplyKind.INSTRUCTION_COMPOSED,
+                reply_sha256="a" * 64,
+            ),
+            _evidence(ToolKind.FORGET_ME),
+        )
+    )
+
+
+def test_default_route_does_not_construct_or_use_ssh_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        production_module,
+        "SshOperatorProofVerifier",
+        lambda: pytest.fail("ordinary E2E must not construct SSH proof"),
+    )
+
+    report = _runner(_profile(tmp_path), _successful_driver()).run()
+
+    assert report.complete
+    assert report.telegram_provenance is TelegramProvenanceStatus.NOT_REQUESTED
+
+
+def test_default_route_rejects_a_sensai_reply_without_complete_instruction(tmp_path: Path) -> None:
+    driver = _FakeDriver(
+        (
+            _evidence(
+                ToolKind.MARKETPLACE_ADD,
+                ToolKind.PLUGIN_INSTALL,
+                ToolKind.LOGIN,
+                ToolKind.NEW_CHAT_URI,
+                texts=(_text(expected=True), _text(expected=True)),
+            ),
+            _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.INITIAL_DISCOVERY),
             _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.OTHER),
             _evidence(ToolKind.FORGET_ME),
         )
     )
+
+    with pytest.raises(ProductionE2EError, match="telegram_continuation_reply_body_unavailable"):
+        _runner(_profile(tmp_path), driver).run()
+
+    assert driver.calls[-1].command[-1].startswith("Заверши проверку")
+
+
+def _runner_script_namespace() -> dict[str, object]:
+    namespace = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] / "scripts" / "run_claude_production_e2e.py"),
+        run_name="sensai_production_e2e_runner_test",
+    )
+    main = cast(Callable[[list[str]], int], namespace["main"])
+    return cast(dict[str, object], main.__globals__)
+
+
+def _complete_report(provenance: TelegramProvenanceStatus) -> ProductionE2EReport:
+    return ProductionE2EReport(
+        installation_messages_exact=True,
+        normal_login_started=True,
+        normal_login_completed=True,
+        sensai_connection_verified=True,
+        telegram_started=True,
+        telegram_continued=True,
+        forget_me_completed=True,
+        telegram_provenance=provenance,
+    )
+
+
+def test_cli_default_mode_does_not_construct_strict_ssh_proof(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    namespace = _runner_script_namespace()
+    seen: dict[str, object] = {}
+
+    class Runner:
+        def __init__(self, **kwargs: object) -> None:
+            seen.update(kwargs)
+
+        def run(self) -> ProductionE2EReport:
+            return _complete_report(TelegramProvenanceStatus.NOT_REQUESTED)
+
+    namespace["ProductionSensaiE2E"] = Runner
+    namespace["SshOperatorProofVerifier"] = lambda: pytest.fail(
+        "ordinary CLI run must not construct SSH proof"
+    )
+
+    main = cast(Callable[[list[str]], int], namespace["main"])
+    assert main(["--profile", str(tmp_path / "profile")]) == 0
+    assert seen["operator_proof"] is None
+    assert "telegram_provenance=not_requested" in capsys.readouterr().out
+
+
+def test_cli_strict_flag_constructs_and_passes_the_ssh_proof(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    namespace = _runner_script_namespace()
+    seen: dict[str, object] = {}
+    proof = object()
+
+    class Runner:
+        def __init__(self, **kwargs: object) -> None:
+            seen.update(kwargs)
+
+        def run(self) -> ProductionE2EReport:
+            return _complete_report(TelegramProvenanceStatus.VERIFIED)
+
+    namespace["ProductionSensaiE2E"] = Runner
+    namespace["SshOperatorProofVerifier"] = lambda: proof
+
+    main = cast(Callable[[list[str]], int], namespace["main"])
+    assert main(["--profile", str(tmp_path / "profile"), "--verify-telegram-provenance"]) == 0
+    assert seen["operator_proof"] is proof
+    assert "telegram_provenance=verified" in capsys.readouterr().out
 
 
 class _Proof:
@@ -859,11 +974,17 @@ def test_operator_proof_runs_after_telegram_reply_and_before_forget_me(
                 texts=(_text(expected=True), _text(expected=True)),
             ),
             _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.INITIAL_DISCOVERY),
-            _evidence(ToolKind.TELL_SENSAI, reply_sha256="a" * 64),
+            _evidence(
+                ToolKind.TELL_SENSAI,
+                sensai_reply=SensaiReplyKind.INSTRUCTION_COMPOSED,
+                reply_sha256="a" * 64,
+            ),
             _evidence(ToolKind.FORGET_ME),
         )
     )
-    assert _runner(_profile(tmp_path), driver, _Proof(True, events)).run().forget_me_completed
+    report = _runner(_profile(tmp_path), driver, _Proof(True, events)).run()
+    assert report.forget_me_completed
+    assert report.telegram_provenance is TelegramProvenanceStatus.VERIFIED
     assert events == ["telegram_reply", "proof", "forget_me"]
 
 
@@ -881,7 +1002,11 @@ def test_operator_proof_failure_and_exception_still_reach_forget_me(tmp_path: Pa
                     texts=(_text(expected=True), _text(expected=True)),
                 ),
                 _evidence(ToolKind.TELL_SENSAI, sensai_reply=SensaiReplyKind.INITIAL_DISCOVERY),
-                _evidence(ToolKind.TELL_SENSAI, reply_sha256="a" * 64),
+                _evidence(
+                    ToolKind.TELL_SENSAI,
+                    sensai_reply=SensaiReplyKind.INSTRUCTION_COMPOSED,
+                    reply_sha256="a" * 64,
+                ),
                 _evidence(ToolKind.FORGET_ME),
             )
         )
@@ -902,8 +1027,9 @@ def test_production_route_uses_public_input_production_model_and_resumed_telegra
     driver = _successful_driver()
     profile = _profile(tmp_path)
 
-    with pytest.raises(ProductionE2EError, match="telegram_operator_proof_not_verified"):
-        _runner(profile, driver).run()
+    report = _runner(profile, driver).run()
+    assert report.complete
+    assert report.telegram_provenance is TelegramProvenanceStatus.NOT_REQUESTED
     assert len(driver.calls) == 7
     auth_status, installation, status, plugin_list, telegram_start, continuation, cleanup = (
         driver.calls
@@ -939,8 +1065,7 @@ def test_report_and_persistent_profile_contain_no_prompt_stream_or_oauth_materia
     driver = _successful_driver()
     profile = _profile(tmp_path)
 
-    with pytest.raises(ProductionE2EError, match="telegram_operator_proof_not_verified"):
-        _runner(profile, driver).run()
+    assert _runner(profile, driver).run().complete
 
     assert not list((profile / "runs").iterdir())
     persistent_text = "\n".join(
@@ -955,6 +1080,26 @@ def test_report_and_persistent_profile_contain_no_prompt_stream_or_oauth_materia
 def test_refuses_to_suppress_the_normal_browser_login_path() -> None:
     with pytest.raises(ProductionE2EError, match="normal_login_path_required"):
         _assert_normal_browser_path(("claude", "mcp", "login", "--no-browser"))
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "",
+        "Only explanation",
+        "Explanation\n\nInstruction:\n",
+        "\n\nInstruction:\nActual instruction",
+        "Explanation\n\nInstruction:\nOne\n\nInstruction:\nTwo",
+    ],
+)
+def test_reply_classifier_rejects_missing_or_ambiguous_instruction(reply: str) -> None:
+    assert _sensai_reply_kind(reply) is SensaiReplyKind.OTHER
+
+
+def test_reply_classifier_accepts_a_complete_instruction_without_retaining_its_text() -> None:
+    reply = "Короткое объяснение\n\nInstruction:\nПолная инструкция"  # noqa: RUF001
+
+    assert _sensai_reply_kind(reply) is SensaiReplyKind.INSTRUCTION_COMPOSED
 
 
 def test_bash_evidence_requires_real_command_semantics_and_rejects_no_browser() -> None:
@@ -1120,7 +1265,7 @@ def test_cleanup_failure_is_reported_and_temporary_profile_is_still_deleted(tmp_
     )
     profile = _profile(tmp_path)
 
-    with pytest.raises(ProductionE2EError, match="telegram_operator_proof_not_verified"):
+    with pytest.raises(ProductionE2EError, match="telegram_continuation_reply_body_unavailable"):
         _runner(profile, driver).run()
 
     assert not list((profile / "runs").iterdir())
