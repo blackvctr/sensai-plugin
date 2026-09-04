@@ -218,6 +218,16 @@ def _parse(records: list[dict[str, object]], *, returncode: int = 0) -> AgentEvi
     )
 
 
+def _parse_raw(payload: bytes) -> AgentEvidence:
+    return _consume_stream(
+        _StreamProcess(payload),  # type: ignore[arg-type]
+        timeout_seconds=1,
+        expected_visible_messages=(),
+        expected_session=uuid.uuid4(),
+        expected_new_chat_uri=None,
+    )
+
+
 def test_installation_route_stops_after_public_plugin_connection_and_new_chat() -> None:
     profile = _profile()
     driver = _successful_driver()
@@ -385,6 +395,29 @@ def test_parser_keeps_terminal_nonzero_unclosed_and_limit_categories_distinct(
         ProductionSensaiE2E._require_installation(unclosed)
     with pytest.raises(ProductionE2EError, match="installation_stream_limit_exceeded"):
         ProductionSensaiE2E._require_installation(limited)
+
+
+def test_parser_marks_invalid_json_and_invalid_block_stop_as_malformed() -> None:
+    invalid_json = _parse_raw(b"{invalid-json}\n")
+    invalid_stop = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {"type": "stream_event", "event": {"type": "content_block_stop", "index": "bad"}},
+            {"type": "result"},
+        ]
+    )
+    unknown = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {"type": "stream_event", "event": {"type": "unknown_event"}},
+            {"type": "result"},
+        ]
+    )
+    assert invalid_json.malformed
+    assert invalid_stop.malformed
+    assert unknown.record_kinds == ("system", "stream:other", "result")
+    with pytest.raises(ProductionE2EError, match="installation_stream_malformed"):
+        ProductionSensaiE2E._require_installation(invalid_stop)
 
 
 def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:

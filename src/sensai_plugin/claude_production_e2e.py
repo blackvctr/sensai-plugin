@@ -345,7 +345,9 @@ def _consume_stream(
             return item_type
         event = record.get("event") if item_type == "stream_event" else None
         event_type = event.get("type") if isinstance(event, dict) else None
-        return f"stream:{event_type}" if isinstance(event_type, str) else "other"
+        if event_type in {"content_block_start", "content_block_delta", "content_block_stop"}:
+            return f"stream:{event_type}"
+        return "stream:other"
 
     def consume(line: bytes) -> None:
         nonlocal event_count, malformed, result_seen, session_verified, stream_limit_exceeded
@@ -423,7 +425,7 @@ def _consume_stream(
         if event_type == "content_block_stop":
             index = event.get("index")
             if not isinstance(index, int):
-                stream_limit_exceeded = True
+                malformed = True
                 return
             text = text_blocks.pop(index, None)
             if text is not None:
