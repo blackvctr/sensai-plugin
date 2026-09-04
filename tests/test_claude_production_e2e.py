@@ -476,7 +476,33 @@ def test_operator_proof_timeout_reaps_the_process_group_once(
 
     assert not SshOperatorProofVerifier().verifies_digest("a" * 64)
     assert terminated == [process]
-    process.close()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda value: value.update(user="bad user"),
+        lambda value: value.update(port=True),
+        lambda value: value.update(port=0),
+        lambda value: value.update(port=65536),
+        lambda value: value.update(identity_file="outside"),
+    ],
+)
+def test_operator_proof_rejects_invalid_direct_ssh_fields_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: object
+) -> None:
+    _, config, _ = _operator_files(tmp_path, monkeypatch)
+    value = json.loads(config.read_text())
+    change(value)  # type: ignore[operator]
+    config.write_text(json.dumps(value))
+    config.chmod(0o600)
+    monkeypatch.setattr(production_module, "_strict_ssh_binary", lambda: None)
+    monkeypatch.setattr(
+        production_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("SSH must not start"),
+    )
+    assert not SshOperatorProofVerifier().verifies_digest("a" * 64)
 
 
 def test_terminate_kills_the_whole_process_group_after_the_grace_period(
