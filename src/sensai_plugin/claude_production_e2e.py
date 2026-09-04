@@ -37,7 +37,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Protocol
@@ -173,7 +173,7 @@ class ToolResultEvidence:
     kind: ToolKind
     succeeded: bool
     sensai_reply: SensaiReplyKind | None
-    reply_text: str | None = field(default=None, repr=False)
+    reply_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,19 +197,21 @@ class AgentEvidence:
             and self.successful_tool_results.count(kind) == exactly
         )
 
-    def successful_reply(self, kind: ToolKind) -> str | None:
-        matches = [item.reply_text for item in self.tool_results if item.kind is kind and item.succeeded]
+    def successful_reply_digest(self, kind: ToolKind) -> str | None:
+        matches = [item.reply_sha256 for item in self.tool_results if item.kind is kind and item.succeeded]
         return matches[0] if len(matches) == 1 and isinstance(matches[0], str) else None
 
 
 class OperatorProofVerifier(Protocol):
-    def verifies(self, response: str) -> bool: ...
+    def verifies_digest(self, response_sha256: str) -> bool: ...
 
 
 class SshOperatorProofVerifier:
     """One fixed SSH proof call; neither response nor target is ever logged."""
 
-    def verifies(self, response: str) -> bool:
+    def verifies_digest(self, response_sha256: str) -> bool:
+        if re.fullmatch(r"[0-9a-f]{64}", response_sha256) is None:
+            return False
         try:
             config = _strict_private_json(_OPERATOR_CONFIG)
             _strict_private_file(_OPERATOR_KNOWN_HOSTS)
@@ -225,7 +227,7 @@ class SshOperatorProofVerifier:
         ):
             return False
         payload = json.dumps(
-            {"schema": _OPERATOR_PROOF_SCHEMA, "response_sha256": hashlib.sha256(response.encode()).hexdigest()},
+            {"schema": _OPERATOR_PROOF_SCHEMA, "response_sha256": response_sha256},
             separators=(",", ":"),
         ).encode() + b"\n"
         try:
@@ -601,7 +603,8 @@ def _tool_results(record: object, outstanding: dict[bytes, ToolKind]) -> list[To
         succeeded = block.get("is_error") is not True
         reply_text = block.get("content") if kind is ToolKind.TELL_SENSAI and isinstance(block.get("content"), str) else None
         reply = _sensai_reply_kind(reply_text) if kind is ToolKind.TELL_SENSAI else None
-        results.append(ToolResultEvidence(kind, succeeded, reply, reply_text))
+        digest = hashlib.sha256(reply_text.encode()).hexdigest() if reply_text is not None else None
+        results.append(ToolResultEvidence(kind, succeeded, reply, digest))
     return results
 
 
@@ -973,8 +976,8 @@ class ProductionSensaiE2E:
                 "telegram_continuation",
                 None,
             )
-            response = telegram_continuation.successful_reply(ToolKind.TELL_SENSAI)
-            if response is None or not self._operator_proof.verifies(response):
+            response_sha256 = telegram_continuation.successful_reply_digest(ToolKind.TELL_SENSAI)
+            if response_sha256 is None or not self._operator_proof.verifies_digest(response_sha256):
                 raise ProductionE2EError("telegram_operator_proof_not_verified")
         except ProductionE2EError as error:
             primary_error = error

@@ -123,8 +123,8 @@ def test_operator_proof_sends_only_hash_and_accepts_only_exact_verified_result(
         return type("Completed", (), {"returncode": 0, "stdout": b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'})()
 
     monkeypatch.setattr(production_module.subprocess, "run", ssh)
-    assert SshOperatorProofVerifier().verifies("private Telegram reply")
-    assert "private Telegram reply" not in repr(seen)
+    reply_digest = "a" * 64
+    assert SshOperatorProofVerifier().verifies_digest(reply_digest)
     payload = json.loads(bytes(seen["input"]).decode())
     assert set(payload) == {"schema", "response_sha256"}
     assert seen["argv"][-1] == "/opt/sensai/bin/sensai_local_e2e_proof.py"
@@ -135,7 +135,7 @@ def test_operator_proof_fails_closed_for_missing_config_bad_output_and_ssh_failu
 ) -> None:
     monkeypatch.setattr(production_module, "_OPERATOR_CONFIG", tmp_path / "missing.json")
     monkeypatch.setattr(production_module, "_OPERATOR_CONFIG_ROOT", tmp_path)
-    assert not SshOperatorProofVerifier().verifies("private")
+    assert not SshOperatorProofVerifier().verifies_digest("a" * 64)
 
 
 def _runner(profile: Path, driver: ClaudeDriver) -> ProductionSensaiE2E:
