@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import runpy
-import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,15 +31,6 @@ def _local_linux_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "linux-home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-
-
-@pytest.fixture(autouse=True)
-def _fixed_windows_firefox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    executable = tmp_path / "windows-firefox.exe"
-    executable.write_text("test executable", encoding="utf-8")
-    executable.chmod(0o700)
-    monkeypatch.setattr(profile_module, "_WINDOWS_FIREFOX_EXECUTABLE", str(executable))
-    return executable
 
 
 def _profile_path() -> Path:
@@ -570,10 +558,12 @@ def test_provision_rejects_target_inside_source_profile(tmp_path: Path) -> None:
 
 def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _source_path(tmp_path)
     _credentials(source)
     profile = provision_profile(_profile_path(), source)
+    monkeypatch.setenv("BROWSER", "host-browser-must-not-leak")
     old_env = {
         name: os.environ.get(name)
         for name in (
@@ -598,17 +588,7 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
         assert run.work == run.root / "work"
         assert run.work.is_dir() and not list(run.work.iterdir())
         assert run.work.stat().st_mode & 0o777 == 0o700
-        assert run.firefox_opener == run.root / "open-in-windows-firefox.py"
-        assert run.firefox_open_marker == run.root / "windows-firefox-open-requested"
-        assert run.firefox_opener.is_file()
-        assert run.firefox_opener.stat().st_mode & 0o777 == 0o700
-        assert not run.firefox_open_marker.exists()
-        assert run.environment["BROWSER"] == str(run.firefox_opener)
-        assert run.environment["BROWSER"] != old_env["BROWSER"]
-        opener_source = run.firefox_opener.read_text(encoding="utf-8")
-        expected_executable = f"FIREFOX_EXECUTABLE = {profile_module._WINDOWS_FIREFOX_EXECUTABLE!r}"
-        assert expected_executable in opener_source
-        assert "os.execv(FIREFOX_EXECUTABLE, (FIREFOX_EXECUTABLE, raw_url))" in opener_source
+        assert "BROWSER" not in run.environment
         copied = json.loads(
             (run.root / "secure-storage" / ".credentials.json").read_text(encoding="utf-8")
         )
@@ -650,98 +630,6 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
         run_file.write_text("remove", encoding="utf-8")
 
     assert not run.root.exists()
-    assert not list((profile.root / "runs").iterdir())
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        [],
-        ["https://example.com", "unexpected"],
-        ["file:///etc/passwd"],
-        ["javascript:alert(1)"],
-        ["https://"],
-        ["https://person@example.com/"],
-        ["https://example.com/\nsecond-line"],
-    ],
-)
-def test_disposable_firefox_opener_rejects_unsafe_arguments_before_browser_launch(
-    tmp_path: Path, arguments: list[str]
-) -> None:
-    source = _source_path(tmp_path)
-    _credentials(source)
-    profile = provision_profile(_profile_path(), source)
-
-    with create_fresh_run(profile.root) as run:
-        completed = subprocess.run(
-            [sys.executable, str(run.firefox_opener), *arguments],
-            cwd=run.root,
-            env={"PATH": os.environ["PATH"]},
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-
-        assert completed.returncode == 64
-        assert not run.firefox_open_marker.exists()
-
-
-def test_disposable_firefox_opener_executes_the_fixed_firefox_path_with_one_url_argument(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_windows_firefox: Path
-) -> None:
-    source = _source_path(tmp_path)
-    _credentials(source)
-    profile = provision_profile(_profile_path(), source)
-    requested_url = "https://accounts.google.com/o/oauth2/auth?state=opaque"
-    observed: dict[str, object] = {}
-
-    def fake_execv(executable: str, arguments: tuple[str, str]) -> None:
-        observed["executable"] = executable
-        observed["arguments"] = arguments
-        raise RuntimeError("stop after observing execv")
-
-    monkeypatch.setattr(os, "execv", fake_execv)
-    with create_fresh_run(profile.root) as run:
-        monkeypatch.setattr(sys, "argv", [str(run.firefox_opener), requested_url])
-
-        with pytest.raises(RuntimeError, match="observing execv"):
-            runpy.run_path(str(run.firefox_opener), run_name="__main__")
-
-        assert observed == {
-            "executable": str(_fixed_windows_firefox),
-            "arguments": (str(_fixed_windows_firefox), requested_url),
-        }
-        assert run.firefox_open_marker.read_bytes() == b"opened\n"
-        assert run.firefox_open_marker.stat().st_mode & 0o777 == 0o600
-
-
-@pytest.mark.parametrize("kind", ["missing", "directory", "not_executable", "symlink"])
-def test_fresh_run_rejects_unavailable_or_unsafe_windows_firefox_before_creating_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
-) -> None:
-    source = _source_path(tmp_path)
-    _credentials(source)
-    profile = provision_profile(_profile_path(), source)
-    candidate = tmp_path / "unavailable-firefox"
-    if kind == "directory":
-        candidate.mkdir()
-    elif kind == "not_executable":
-        candidate.write_text("not executable", encoding="utf-8")
-        candidate.chmod(0o600)
-    elif kind == "symlink":
-        target = tmp_path / "target-firefox"
-        target.write_text("target", encoding="utf-8")
-        target.chmod(0o700)
-        candidate.symlink_to(target)
-    monkeypatch.setattr(profile_module, "_WINDOWS_FIREFOX_EXECUTABLE", str(candidate))
-
-    with (
-        pytest.raises(ClaudeE2EProfileError, match="Firefox executable"),
-        create_fresh_run(profile.root),
-    ):
-        pytest.fail("unsafe Firefox must fail before a run is created")
-
     assert not list((profile.root / "runs").iterdir())
 
 
