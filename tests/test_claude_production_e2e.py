@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -189,8 +189,102 @@ def test_operator_proof_sends_only_hash_and_accepts_only_exact_verified_result(
         "stderr": subprocess.DEVNULL,
         "start_new_session": True,
     }
-    assert f"UserKnownHostsFile={known_hosts}" in seen["argv"]
-    assert seen["argv"][-1] == "/opt/sensai/bin/sensai_local_e2e_proof.py"
+    assert seen["argv"] == [
+        str(production_module._SSH_EXECUTABLE),
+        "-F",
+        "/dev/null",
+        "-i",
+        str(production_module._OPERATOR_IDENTITY),
+        "-o",
+        "IdentitiesOnly=yes",
+        "-p",
+        "22",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={known_hosts}",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
+        "ProxyCommand=none",
+        "-o",
+        "ProxyJump=none",
+        "-o",
+        "RemoteCommand=none",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ForwardAgent=no",
+        "sensai_proof@proof.example",
+        "/opt/sensai/bin/sensai_local_e2e_proof.py",
+    ]
+    process.close()
+
+
+def test_operator_proof_passes_a_nondefault_port_separately_from_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = {
+        "schema": "sensai-local-e2e-ssh-v1",
+        "host": "proof.example",
+        "user": "sensai_proof",
+        "port": 2222,
+        "identity_file": "local-e2e-proof-identity",
+    }
+    _, _, known_hosts = _operator_files(
+        tmp_path,
+        monkeypatch,
+        config_bytes=json.dumps(config).encode(),
+    )
+    known_hosts.write_text("[proof.example]:2222 ssh-ed25519 public-key\n", encoding="utf-8")
+    monkeypatch.setattr(production_module, "_strict_ssh_binary", lambda: None)
+    process = _ProofProcess(b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n')
+    seen: dict[str, object] = {}
+
+    def ssh(argv: list[str], **_kwargs: object) -> _ProofProcess:
+        seen["argv"] = argv
+        return process
+
+    monkeypatch.setattr(
+        production_module.subprocess,
+        "Popen",
+        ssh,
+    )
+
+    assert SshOperatorProofVerifier().verifies_digest("a" * 64)
+    assert seen["argv"] == [
+        str(production_module._SSH_EXECUTABLE),
+        "-F",
+        "/dev/null",
+        "-i",
+        str(production_module._OPERATOR_IDENTITY),
+        "-o",
+        "IdentitiesOnly=yes",
+        "-p",
+        "2222",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={known_hosts}",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
+        "ProxyCommand=none",
+        "-o",
+        "ProxyJump=none",
+        "-o",
+        "RemoteCommand=none",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ForwardAgent=no",
+        "sensai_proof@proof.example",
+        "/opt/sensai/bin/sensai_local_e2e_proof.py",
+    ]
     process.close()
 
 
@@ -481,19 +575,46 @@ def test_operator_proof_timeout_reaps_the_process_group_once(
 @pytest.mark.parametrize(
     "change",
     [
-        lambda value: value.update(user="bad user"),
-        lambda value: value.update(port=True),
-        lambda value: value.update(port=0),
-        lambda value: value.update(port=65536),
-        lambda value: value.update(identity_file="outside"),
+        pytest.param(lambda value: value.update(user="bad user"), id="user_spaces"),
+        pytest.param(lambda value: value.update(user="-root"), id="user_option_like"),
+        pytest.param(lambda value: value.update(user="User"), id="user_uppercase"),
+        pytest.param(lambda value: value.update(user="a" * 33), id="user_too_long"),
+        pytest.param(lambda value: value.update(user=1), id="user_not_string"),
+        pytest.param(lambda value: value.update(port=True), id="port_bool"),
+        pytest.param(lambda value: value.update(port="22"), id="port_string"),
+        pytest.param(lambda value: value.update(port=22.0), id="port_float"),
+        pytest.param(lambda value: value.update(port=None), id="port_null"),
+        pytest.param(lambda value: value.update(port=0), id="port_zero"),
+        pytest.param(lambda value: value.update(port=65536), id="port_too_large"),
+        pytest.param(lambda value: value.update(identity_file=""), id="identity_empty"),
+        pytest.param(
+            lambda value: value.update(identity_file="../local-e2e-proof-identity"),
+            id="identity_parent_escape",
+        ),
+        pytest.param(
+            lambda value: value.update(identity_file="/tmp/local-e2e-proof-identity"),
+            id="identity_absolute",
+        ),
+        pytest.param(
+            lambda value: value.update(identity_file="nested/local-e2e-proof-identity"),
+            id="identity_nested_path",
+        ),
+        pytest.param(
+            lambda value: value.update(identity_file="local-e2e-proof-identity "),
+            id="identity_trailing_space",
+        ),
+        pytest.param(lambda value: value.update(identity_file=1), id="identity_not_string"),
     ],
 )
 def test_operator_proof_rejects_invalid_direct_ssh_fields_before_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: object
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: Callable[[dict[str, object]], None],
 ) -> None:
     _, config, _ = _operator_files(tmp_path, monkeypatch)
     value = json.loads(config.read_text())
-    change(value)  # type: ignore[operator]
+    assert isinstance(value, dict)
+    change(value)
     config.write_text(json.dumps(value))
     config.chmod(0o600)
     monkeypatch.setattr(production_module, "_strict_ssh_binary", lambda: None)
