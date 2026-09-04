@@ -231,7 +231,7 @@ class SshOperatorProofVerifier:
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", config["host"])
             or not isinstance(config.get("user"), str)
             or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", config["user"])
-            or not isinstance(config.get("port"), int)
+            or type(config.get("port")) is not int
             or not 1 <= config["port"] <= 65535
             or config.get("identity_file") != _OPERATOR_IDENTITY.name
         ):
@@ -251,6 +251,8 @@ class SshOperatorProofVerifier:
                     "/dev/null",
                     "-i",
                     str(_OPERATOR_IDENTITY),
+                    "-o",
+                    "IdentitiesOnly=yes",
                     "-p",
                     str(config["port"]),
                     "-o",

@@ -19,6 +19,8 @@ file with mode `0600` and exactly this shape:
 `~/.config/sensai/local-e2e-proof-known_hosts` must also be a regular,
 user-owned `0600` file, not a symbolic link.  Put only the approved server
 host key there.
+For a port other than 22, use the standard bracketed known-hosts form:
+`[proof-host.example]:2222 ssh-ed25519 ...`.
 
 `~/.config/sensai/local-e2e-proof-identity` is the only accepted SSH private
 key path. It must be a regular user-owned `0600` file, not a symbolic link.
