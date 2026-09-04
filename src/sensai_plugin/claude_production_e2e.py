@@ -29,18 +29,18 @@ import os
 import re
 import selectors
 import shlex
-import signal
 import shutil
-import subprocess
+import signal
 import stat
+import subprocess
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -83,9 +83,9 @@ _TELEGRAM_FACTS = (
 )
 _FORGET_ME_REQUEST = "Заверши проверку: вызови инструмент Sensai forget_me ровно один раз."
 _INITIAL_DISCOVERY_REPLY = (
-    "Я Sensai. Помоги получить от человека его роль, примерно пять привычных программ или сайтов "
+    "Я Sensai. Помоги получить от человека его роль, примерно пять привычных программ или сайтов "  # noqa: RUF001
     "и повторяющиеся рабочие задачи, затем передай мне ответы. Так рекомендации будут полезны "
-    "именно для его работы."
+    "именно для его работы."  # noqa: RUF001
 )
 
 
@@ -98,7 +98,7 @@ def fetch_public_readme_contract() -> PublicReadmeContract:
 
     request = Request(PUBLIC_README_URL, headers={"Accept": "text/plain"})
     try:
-        with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed HTTPS public origin.
+        with urlopen(request, timeout=20) as response:
             if response.geturl() != PUBLIC_README_URL:
                 raise ProductionE2EError("public_readme_redirected")
             body = response.read(MAX_PUBLIC_README_BYTES + 1)
@@ -199,7 +199,9 @@ class AgentEvidence:
         )
 
     def successful_reply_digest(self, kind: ToolKind) -> str | None:
-        matches = [item.reply_sha256 for item in self.tool_results if item.kind is kind and item.succeeded]
+        matches = [
+            item.reply_sha256 for item in self.tool_results if item.kind is kind and item.succeeded
+        ]
         return matches[0] if len(matches) == 1 and isinstance(matches[0], str) else None
 
 
@@ -227,16 +229,57 @@ class SshOperatorProofVerifier:
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", config["host"])
         ):
             return False
-        payload = json.dumps(
-            {"schema": _OPERATOR_PROOF_SCHEMA, "response_sha256": response_sha256},
-            separators=(",", ":"),
-        ).encode() + b"\n"
+        payload = (
+            json.dumps(
+                {"schema": _OPERATOR_PROOF_SCHEMA, "response_sha256": response_sha256},
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
         try:
             process = subprocess.Popen(
-                [str(_SSH_EXECUTABLE), "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={_OPERATOR_KNOWN_HOSTS}", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "RemoteCommand=none", "-o", "ControlMaster=no", "-o", "ForwardAgent=no", config["host"], _REMOTE_PROOF_COMMAND],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                [
+                    str(_SSH_EXECUTABLE),
+                    "-F",
+                    "/dev/null",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=yes",
+                    "-o",
+                    f"UserKnownHostsFile={_OPERATOR_KNOWN_HOSTS}",
+                    "-o",
+                    "GlobalKnownHostsFile=/dev/null",
+                    "-o",
+                    "ProxyCommand=none",
+                    "-o",
+                    "ProxyJump=none",
+                    "-o",
+                    "RemoteCommand=none",
+                    "-o",
+                    "ControlMaster=no",
+                    "-o",
+                    "ForwardAgent=no",
+                    config["host"],
+                    _REMOTE_PROOF_COMMAND,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+        except OSError:
+            return False
+
+        terminated = False
+
+        def terminate_once() -> None:
+            nonlocal terminated
+            if not terminated:
+                _terminate(process)
+                terminated = True
+
+        try:
             assert process.stdin is not None and process.stdout is not None
             process.stdin.write(payload)
             process.stdin.close()
@@ -244,12 +287,12 @@ class SshOperatorProofVerifier:
             output = bytearray()
             deadline = time.monotonic() + 60
             selector = selectors.DefaultSelector()
-            selector.register(process.stdout, selectors.EVENT_READ)
             try:
+                selector.register(process.stdout, selectors.EVENT_READ)
                 while process.poll() is None or selector.get_map():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        _terminate(process)
+                        terminate_once()
                         return False
                     for key, _ in selector.select(remaining):
                         chunk = os.read(key.fd, _MAX_OPERATOR_PROOF_OUTPUT + 1)
@@ -258,37 +301,73 @@ class SshOperatorProofVerifier:
                             continue
                         output.extend(chunk)
                         if len(output) > _MAX_OPERATOR_PROOF_OUTPUT:
-                            _terminate(process)
+                            terminate_once()
                             return False
             finally:
                 selector.close()
-                if process.poll() is None:
-                    _terminate(process)
-            return process.wait() == 0 and bytes(output) == b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'
+            return (
+                process.wait() == 0
+                and bytes(output) == b'{"schema":"sensai-local-e2e-proof-v1","result":"verified"}\n'
+            )
         except (OSError, BrokenPipeError):
             return False
+        finally:
+            with suppress(OSError, ValueError):
+                process.stdin.close()
+            with suppress(OSError, ValueError):
+                process.stdout.close()
+            if process.poll() is None:
+                terminate_once()
 
 
 def _strict_private_file(path: Path) -> bytes:
     root = _OPERATOR_CONFIG_ROOT
     directory = os.lstat(root)
-    if stat.S_ISLNK(directory.st_mode) or not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
+    if (
+        stat.S_ISLNK(directory.st_mode)
+        or not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != os.getuid()
+        or stat.S_IMODE(directory.st_mode) != 0o700
+    ):
         raise ValueError("unsafe proof configuration directory")
+    if path.parent != root:
+        raise ValueError("proof configuration outside its directory")
     before = os.lstat(path)
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600:
+    if not _private_regular_file(before):
         raise ValueError("unsafe proof configuration file")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "rb") as handle:
         opened = os.fstat(handle.fileno())
         data = handle.read(4097)
     after = os.lstat(path)
-    if len(data) > 4096 or (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size) != (opened.st_dev, opened.st_ino, opened.st_mtime_ns, opened.st_size) or (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size) != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
+    if (
+        len(data) > 4096
+        or not _private_regular_file(opened)
+        or not _private_regular_file(after)
+        or _file_identity(before) != _file_identity(opened)
+        or _file_identity(before) != _file_identity(after)
+    ):
         raise ValueError("proof configuration changed while reading")
     return data
 
 
+def _private_regular_file(item: os.stat_result) -> bool:
+    return (
+        not stat.S_ISLNK(item.st_mode)
+        and stat.S_ISREG(item.st_mode)
+        and item.st_uid == os.getuid()
+        and stat.S_IMODE(item.st_mode) == 0o600
+    )
+
+
+def _file_identity(item: os.stat_result) -> tuple[int, int, int, int]:
+    return item.st_dev, item.st_ino, item.st_mtime_ns, item.st_size
+
+
 def _strict_private_json(path: Path) -> object:
-    return json.loads(_strict_private_file(path).decode("utf-8"), object_pairs_hook=_reject_duplicate_object)
+    return json.loads(
+        _strict_private_file(path).decode("utf-8"), object_pairs_hook=_reject_duplicate_object
+    )
 
 
 def _reject_duplicate_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -302,7 +381,12 @@ def _reject_duplicate_object(pairs: list[tuple[str, object]]) -> dict[str, objec
 
 def _strict_ssh_binary() -> None:
     item = os.lstat(_SSH_EXECUTABLE)
-    if stat.S_ISLNK(item.st_mode) or not stat.S_ISREG(item.st_mode) or item.st_uid != 0 or stat.S_IMODE(item.st_mode) & 0o022:
+    if (
+        stat.S_ISLNK(item.st_mode)
+        or not stat.S_ISREG(item.st_mode)
+        or item.st_uid != 0
+        or stat.S_IMODE(item.st_mode) & 0o022
+    ):
         raise ValueError("unsafe ssh executable")
 
 
@@ -344,7 +428,12 @@ class ClaudeDriver(Protocol):
     ) -> bool: ...
 
     def public_sensai_plugin_installed(
-        self, command: Sequence[str], *, cwd: Path, environment: dict[str, str], timeout_seconds: int
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        timeout_seconds: int,
     ) -> bool: ...
 
     def claude_authenticated(
@@ -460,8 +549,13 @@ class SubprocessClaudeDriver:
         _assert_normal_browser_path(command)
         try:
             completed = subprocess.run(
-                list(command), cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout_seconds,
+                list(command),
+                cwd=cwd,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout_seconds,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -475,12 +569,23 @@ class SubprocessClaudeDriver:
         return isinstance(status, dict) and status.get("loggedIn") is True
 
     def public_sensai_plugin_installed(
-        self, command: Sequence[str], *, cwd: Path, environment: dict[str, str], timeout_seconds: int
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        timeout_seconds: int,
     ) -> bool:
         try:
             completed = subprocess.run(
-                list(command), cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout_seconds, check=False,
+                list(command),
+                cwd=cwd,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout_seconds,
+                check=False,
             )
             entries = json.loads(completed.stdout.decode("utf-8"))
         except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError, json.JSONDecodeError):
@@ -537,9 +642,7 @@ def _direct_tool_kind(block: object) -> ToolKind | None:
     if not isinstance(block, dict):
         return None
     name = block.get("name")
-    if not isinstance(name, str) or not name.startswith(
-        ("mcp__sensai__", "mcp__plugin_sensai__")
-    ):
+    if not isinstance(name, str) or not name.startswith(("mcp__sensai__", "mcp__plugin_sensai__")):
         return None
     if name in {"mcp__sensai__forget_me", "mcp__plugin_sensai__forget_me"}:
         return ToolKind.FORGET_ME
@@ -631,7 +734,11 @@ def _tool_results(record: object, outstanding: dict[bytes, ToolKind]) -> list[To
         key = _safe_tool_result_key(block.get("tool_use_id"))
         kind = outstanding.pop(key, ToolKind.OTHER) if key is not None else ToolKind.OTHER
         succeeded = block.get("is_error") is not True
-        reply_text = block.get("content") if kind is ToolKind.TELL_SENSAI and isinstance(block.get("content"), str) else None
+        reply_text = (
+            block.get("content")
+            if kind is ToolKind.TELL_SENSAI and isinstance(block.get("content"), str)
+            else None
+        )
         reply = _sensai_reply_kind(reply_text) if kind is ToolKind.TELL_SENSAI else None
         digest = hashlib.sha256(reply_text.encode()).hexdigest() if reply_text is not None else None
         results.append(ToolResultEvidence(kind, succeeded, reply, digest))
@@ -746,7 +853,10 @@ def _consume_stream(
             partial_json = delta.get("partial_json") if isinstance(delta, dict) else None
             tool_accumulator = tool_blocks.get(index) if isinstance(index, int) else None
             if tool_accumulator is not None and isinstance(partial_json, str):
-                if sum(len(part) for part in tool_accumulator.input_chunks) + len(partial_json) > MAX_TOOL_INPUT_BYTES:
+                if (
+                    sum(len(part) for part in tool_accumulator.input_chunks) + len(partial_json)
+                    > MAX_TOOL_INPUT_BYTES
+                ):
                     malformed = True
                     return
                 tool_accumulator.input_chunks.append(partial_json)
@@ -778,7 +888,9 @@ def _consume_stream(
                     except json.JSONDecodeError:
                         kind = ToolKind.OTHER
                     else:
-                        command = input_value.get("command") if isinstance(input_value, dict) else None
+                        command = (
+                            input_value.get("command") if isinstance(input_value, dict) else None
+                        )
                         kind = (
                             _classify_bash_command(command, expected_new_chat_uri)
                             if isinstance(command, str)
@@ -905,7 +1017,8 @@ class ProductionSensaiE2E:
                 run,
                 contract=contract,
                 executable=executable,
-                new_chat_uri="claude://code/new?" + urlencode({"q": contract.russian_new_chat_request}),
+                new_chat_uri="claude://code/new?"
+                + urlencode({"q": contract.russian_new_chat_request}),
                 installation_session=installation_session,
                 telegram_session=telegram_session,
             )
@@ -928,7 +1041,9 @@ class ProductionSensaiE2E:
         primary_error: ProductionE2EError | None = None
         try:
             if not self._driver.claude_authenticated(
-                _auth_status_command(executable), cwd=run.work, environment=run.environment,
+                _auth_status_command(executable),
+                cwd=run.work,
+                environment=run.environment,
                 timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
             ):
                 raise ProductionE2EError("isolated_claude_auth_not_verified")
@@ -964,7 +1079,9 @@ class ProductionSensaiE2E:
             ):
                 raise ProductionE2EError("sensai_endpoint_configuration_not_verified")
             if not self._driver.public_sensai_plugin_installed(
-                _plugin_list_command(executable), cwd=run.work, environment=run.environment,
+                _plugin_list_command(executable),
+                cwd=run.work,
+                environment=run.environment,
                 timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
             ):
                 raise ProductionE2EError("public_sensai_plugin_not_verified")
@@ -984,7 +1101,10 @@ class ProductionSensaiE2E:
             )
             cleanup_session = telegram_session
             self._require_tool_turn(
-                telegram_start, ToolKind.TELL_SENSAI, "telegram_start", SensaiReplyKind.INITIAL_DISCOVERY
+                telegram_start,
+                ToolKind.TELL_SENSAI,
+                "telegram_start",
+                SensaiReplyKind.INITIAL_DISCOVERY,
             )
             telegram_continuation = self._driver.run_agent(
                 _agent_command(

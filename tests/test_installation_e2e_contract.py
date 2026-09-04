@@ -9,9 +9,9 @@ from sensai_plugin.installation_e2e_contract import (
     ClaudeVisibleMessage,
     InstallationTranscript,
     PublicReadmeContract,
+    SensaiConnectionObserved,
     SensaiLoginCompleted,
     SensaiLoginStarted,
-    SensaiConnectionObserved,
     _public_contract_from_markdown,
     evaluate_installation_transcript,
 )

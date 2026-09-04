@@ -11,11 +11,11 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
+from sensai_plugin.claude_e2e_profile import ClaudeE2EProfileError  # noqa: E402
 from sensai_plugin.claude_production_e2e import (  # noqa: E402
     ProductionE2EError,
     ProductionSensaiE2E,
 )
-from sensai_plugin.claude_e2e_profile import ClaudeE2EProfileError  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
