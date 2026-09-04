@@ -434,7 +434,24 @@ def _load_baseline_credentials(path: Path) -> bytes:
     return (json.dumps(value, sort_keys=True) + "\n").encode()
 
 
-def _firefox_opener_source(marker: Path) -> bytes:
+def _validated_windows_firefox_executable() -> Path:
+    """Require the one local Firefox executable before an E2E run is created."""
+
+    executable = Path(_WINDOWS_FIREFOX_EXECUTABLE)
+    try:
+        item = os.lstat(executable)
+    except OSError as error:
+        raise ClaudeE2EProfileError("Windows Firefox executable is unavailable") from error
+    if (
+        stat.S_ISLNK(item.st_mode)
+        or not stat.S_ISREG(item.st_mode)
+        or not (stat.S_IMODE(item.st_mode) & 0o111)
+    ):
+        raise ClaudeE2EProfileError("Windows Firefox executable is unsafe")
+    return executable
+
+
+def _firefox_opener_source(marker: Path, executable: Path) -> bytes:
     """Return the one-purpose browser handoff kept inside a disposable run."""
 
     return f'''#!/usr/bin/python3
@@ -445,7 +462,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-FIREFOX_EXECUTABLE = {_WINDOWS_FIREFOX_EXECUTABLE!r}
+FIREFOX_EXECUTABLE = {str(executable)!r}
 MARKER = Path({str(marker)!r})
 MAX_URL_BYTES = 16 * 1024
 
@@ -480,7 +497,7 @@ with os.fdopen(descriptor, "wb") as output:
     os.fsync(output.fileno())
 MARKER.chmod(0o600)
 os.execv(FIREFOX_EXECUTABLE, (FIREFOX_EXECUTABLE, raw_url))
-'''.encode("utf-8")
+'''.encode()
 
 
 def _run_environment(root: Path, firefox_opener: Path) -> dict[str, str]:
@@ -517,6 +534,7 @@ def create_fresh_run(profile: Path) -> Iterator[ClaudeE2ERun]:
 
     persistent = _load_profile(profile)
     with _profile_lock(persistent.root):
+        firefox_executable = _validated_windows_firefox_executable()
         run_root = Path(tempfile.mkdtemp(prefix="run-", dir=persistent.root / "runs"))
         run_identity = _directory_identity(run_root)
         try:
@@ -528,7 +546,10 @@ def create_fresh_run(profile: Path) -> Iterator[ClaudeE2ERun]:
                 raise ClaudeE2EProfileError("fresh Claude E2E working directory is not empty")
             firefox_opener = run_root / _FIREFOX_OPENER_NAME
             firefox_open_marker = run_root / _FIREFOX_OPEN_MARKER_NAME
-            _write_private_executable(firefox_opener, _firefox_opener_source(firefox_open_marker))
+            _write_private_executable(
+                firefox_opener,
+                _firefox_opener_source(firefox_open_marker, firefox_executable),
+            )
             environment = _run_environment(run_root, firefox_opener)
             _write_private(
                 Path(environment["CLAUDE_CONFIG_DIR"]) / ".credentials.json",
