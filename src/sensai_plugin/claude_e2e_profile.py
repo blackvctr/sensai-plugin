@@ -233,6 +233,12 @@ def _configured_current_account_config_path() -> Path:
     return _absolute(config / ".claude.json")
 
 
+def _trusted_current_main_account_config_path() -> Path:
+    """Return Claude's approved main account record, never the credential override."""
+
+    return _absolute(Path.home() / ".claude.json")
+
+
 def _assert_no_symlink_components(path: Path) -> None:
     absolute = _absolute(path)
     current = Path(absolute.anchor)
@@ -598,7 +604,7 @@ def provision_trusted_current_profile(profile: Path) -> ClaudeE2EProfile:
     description, credentials, account_config = _prepare_provision(
         profile,
         _configured_current_credentials_path(),
-        _configured_current_account_config_path(),
+        _trusted_current_main_account_config_path(),
         source_trust=SourceTrust.USER_APPROVED_CURRENT_SOURCE_ONCE,
     )
     return _create_profile(description, credentials, account_config)

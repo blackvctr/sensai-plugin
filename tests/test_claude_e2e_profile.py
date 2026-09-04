@@ -296,6 +296,25 @@ def test_one_time_current_migration_copies_only_minimal_login_and_never_revisits
         assert run.work.is_dir()
 
 
+def test_one_time_current_migration_uses_home_account_config_when_credentials_are_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = Path.home() / ".direct-current-credentials" / ".credentials.json"
+    credentials.parent.mkdir(mode=0o777)
+    _credentials(credentials)
+    credentials.parent.chmod(0o777)
+    credentials.chmod(0o777)
+    account = Path.home() / ".claude.json"
+    expected_account = _account_config(account)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(credentials.parent))
+
+    profile = provision_trusted_current_profile(_profile_path())
+
+    assert json.loads(profile.baseline_account_config.read_text(encoding="utf-8")) == {
+        "oauthAccount": expected_account["oauthAccount"]
+    }
+
+
 def test_one_time_current_migration_rejects_invalid_source_without_creating_target() -> None:
     source = _current_unsafe_source()
     source.write_text("not json", encoding="utf-8")
