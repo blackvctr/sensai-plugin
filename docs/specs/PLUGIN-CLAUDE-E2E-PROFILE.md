@@ -9,10 +9,20 @@ authorization, browser data, or Google data to a server.
 
 ## Persistent contents
 
-The provisioner accepts one explicit Claude credential file and verifies that it
-contains a Claude login. It writes only that login into its own profile. It does
-not copy Claude settings, conversation history, plugins, marketplace state,
+The normal provisioner accepts one explicit private Linux Claude credential file
+and verifies that it contains a Claude login. Its file must belong to the local
+user, have mode `0600`, contain no symlink in its path, and be outside mounted
+and development directories. It writes only that login into its own profile. It
+does not copy Claude settings, conversation history, plugins, marketplace state,
 browser data, or MCP/Sensai authorization.
+
+The current working Claude profile can be a shared or mounted copy which cannot
+meet that contract. `--trust-current-credentials-once` is the one explicit
+exception: it reads exactly the currently configured Claude credential file once
+after the person has approved the migration, reduces it to the Claude login in
+memory, and writes a new private baseline. It accepts no arbitrary source path,
+cannot be used for a dry run, and never refreshes the baseline later. This is a
+deliberate trust event, not a claim that the shared source is protected.
 
 At provisioning time, protected local metadata records a one-way fingerprint of
 the exact minimal login record. Before every fresh test run, the fingerprint
@@ -47,6 +57,18 @@ uv run python scripts/provision_claude_e2e_profile.py \
 After the dry run has been reviewed, the same command with `--provision` creates
 the profile. Provisioning itself does not start Claude, open a browser, install
 a plugin, or contact Sensai.
+
+For the explicitly approved one-time migration from the configured current
+profile, use a new target and no source-path argument:
+
+```sh
+uv run python scripts/provision_claude_e2e_profile.py \
+  --profile "$HOME/.local/share/sensai-claude-e2e" \
+  --trust-current-credentials-once --provision
+```
+
+If the baseline must later be replaced, create a new separately named profile
+through another explicit migration. The runner never rereads the old source.
 
 ## One test run
 

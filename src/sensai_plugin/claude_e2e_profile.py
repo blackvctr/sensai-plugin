@@ -18,6 +18,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from sensai_plugin.installation_e2e_contract import CLAUDE_SONNET_5_MODEL
@@ -30,6 +31,7 @@ except ImportError:  # pragma: no cover - the supported local runner is POSIX/WS
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEVELOPMENT_ROOT = REPOSITORY_ROOT.parents[1]
+MOUNTED_ROOT = Path("/mnt")
 CLAUDE_E2E_MODEL = CLAUDE_SONNET_5_MODEL
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
 _OWNER_MARKER_NAME = ".sensai-e2e-owner.json"
@@ -56,6 +58,13 @@ class ClaudeE2EProfileError(ValueError):
     """Raised before a profile can be created or used safely."""
 
 
+class SourceTrust(StrEnum):
+    """How the one Claude login entered the private E2E baseline."""
+
+    PRIVATE_LOCAL_SOURCE = "private_local_source"
+    USER_APPROVED_CURRENT_SOURCE_ONCE = "user_approved_current_source_once"
+
+
 @dataclass(frozen=True, slots=True)
 class ProvisionDescription:
     """Non-sensitive result of validating one requested provisioning action."""
@@ -63,11 +72,17 @@ class ProvisionDescription:
     profile: Path
     model: str
     auth_record_count: int
+    source_trust: SourceTrust
 
     def safe_summary(self) -> str:
+        source = (
+            "by one-time user approval from the configured current source"
+            if self.source_trust is SourceTrust.USER_APPROVED_CURRENT_SOURCE_ONCE
+            else "from one private local Claude source"
+        )
         return (
-            "Claude authorization source is valid; provisioning would copy one "
-            f"Claude login record for model {self.model}."
+            "Provisioning would copy one Claude login record "
+            f"{source} for model {self.model}."
         )
 
 
@@ -128,7 +143,7 @@ def _assert_separate_from_source(profile: Path, source_credentials: Path) -> Non
         )
 
 
-def _read_regular_bytes(path: Path) -> bytes:
+def _read_regular_bytes(path: Path, *, require_private_owner: bool = False) -> bytes:
     absolute = _absolute(path)
     try:
         before = os.lstat(absolute)
@@ -136,6 +151,10 @@ def _read_regular_bytes(path: Path) -> bytes:
         raise ClaudeE2EProfileError("Claude authorization source is unavailable") from error
     if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
         raise ClaudeE2EProfileError("Claude authorization source must be a regular file")
+    if require_private_owner and (
+        before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600
+    ):
+        raise ClaudeE2EProfileError("Claude authorization source must be private and owned")
     if before.st_size > _MAX_CREDENTIAL_BYTES:
         raise ClaudeE2EProfileError("Claude authorization source is too large")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -152,14 +171,23 @@ def _read_regular_bytes(path: Path) -> bytes:
     after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
     if identity != opened_identity or identity != after_identity:
         raise ClaudeE2EProfileError("Claude authorization source changed while reading")
+    if require_private_owner and (
+        opened.st_uid != os.getuid()
+        or after.st_uid != os.getuid()
+        or stat.S_IMODE(opened.st_mode) != 0o600
+        or stat.S_IMODE(after.st_mode) != 0o600
+    ):
+        raise ClaudeE2EProfileError("Claude authorization source changed while reading")
     if len(data) > _MAX_CREDENTIAL_BYTES or len(data) != before.st_size:
         raise ClaudeE2EProfileError("Claude authorization source changed while reading")
     return data
 
 
-def _minimal_credentials(source: Path) -> bytes:
+def _minimal_credentials(source: Path, *, require_private_owner: bool) -> bytes:
     try:
-        document = json.loads(_read_regular_bytes(source))
+        document = json.loads(
+            _read_regular_bytes(source, require_private_owner=require_private_owner)
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ClaudeE2EProfileError("Claude authorization source is not valid JSON") from error
     if source.name != ".credentials.json":
@@ -172,10 +200,65 @@ def _minimal_credentials(source: Path) -> bytes:
     return (json.dumps(minimal, sort_keys=True) + "\n").encode()
 
 
-def _profile_manifest(credentials: bytes) -> dict[str, object]:
+def _configured_current_credentials_path() -> Path:
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    config = Path(configured) if configured else Path.home() / ".claude"
+    return _absolute(config / ".credentials.json")
+
+
+def _assert_no_symlink_components(path: Path) -> None:
+    absolute = _absolute(path)
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        try:
+            item = os.lstat(current)
+        except OSError as error:
+            raise ClaudeE2EProfileError("Claude authorization source is unavailable") from error
+        if stat.S_ISLNK(item.st_mode):
+            raise ClaudeE2EProfileError("Claude authorization source must not include symlinks")
+
+
+def _assert_private_linux_source_location(source: Path) -> None:
+    absolute = _absolute(source)
+    _assert_no_symlink_components(absolute)
+    try:
+        physical = absolute.resolve(strict=True)
+        home = Path.home().resolve(strict=True)
+    except OSError as error:
+        raise ClaudeE2EProfileError("Claude authorization source is unavailable") from error
+    development = DEVELOPMENT_ROOT.resolve(strict=True)
+    if physical.is_relative_to(MOUNTED_ROOT) or physical.is_relative_to(development):
+        raise ClaudeE2EProfileError(
+            "Claude authorization source must be outside mounted and development directories"
+        )
+    if not physical.is_relative_to(home):
+        raise ClaudeE2EProfileError(
+            "Claude authorization source must be under the local Linux home"
+        )
+    current = home
+    components = ("", *physical.parent.relative_to(home).parts)
+    for component in components:
+        if component:
+            current /= component
+        try:
+            item = os.lstat(current)
+        except OSError as error:
+            raise ClaudeE2EProfileError("Claude authorization source is unavailable") from error
+        if (
+            stat.S_ISLNK(item.st_mode)
+            or not stat.S_ISDIR(item.st_mode)
+            or item.st_uid != os.getuid()
+            or stat.S_IMODE(item.st_mode) & 0o022
+        ):
+            raise ClaudeE2EProfileError("Claude authorization source parent is not private")
+
+
+def _profile_manifest(credentials: bytes, source_trust: SourceTrust) -> dict[str, object]:
     return {
         **_MANIFEST,
         "claude_login_sha256": hashlib.sha256(credentials).hexdigest(),
+        "source_trust": source_trust.value,
     }
 
 
@@ -187,22 +270,47 @@ def discover_current_credentials() -> Path:
     profile such as a home-level config file.
     """
 
-    configured = os.environ.get("CLAUDE_CONFIG_DIR")
-    config = Path(configured) if configured else Path.home() / ".claude"
-    source = _absolute(config / ".credentials.json")
+    source = _configured_current_credentials_path()
     # This validates only availability and the dedicated Claude-login shape;
     # it neither copies a record nor probes broad ~/.claude.json state.
-    _minimal_credentials(source)
+    _assert_private_linux_source_location(source)
+    _minimal_credentials(source, require_private_owner=True)
     return source
 
 
-def describe_provision(profile: Path, source_credentials: Path) -> ProvisionDescription:
+def _prepare_provision(
+    profile: Path,
+    source_credentials: Path,
+    *,
+    source_trust: SourceTrust,
+) -> tuple[ProvisionDescription, bytes]:
     target = _assert_profile_location(profile)
-    _minimal_credentials(source_credentials)
+    if source_trust is SourceTrust.PRIVATE_LOCAL_SOURCE:
+        _assert_private_linux_source_location(source_credentials)
+    credentials = _minimal_credentials(
+        source_credentials,
+        require_private_owner=source_trust is SourceTrust.PRIVATE_LOCAL_SOURCE,
+    )
     _assert_separate_from_source(target, source_credentials)
     if target.exists() or target.is_symlink():
         raise ClaudeE2EProfileError("persistent profile already exists")
-    return ProvisionDescription(target, CLAUDE_E2E_MODEL, auth_record_count=1)
+    return (
+        ProvisionDescription(
+            target,
+            CLAUDE_E2E_MODEL,
+            auth_record_count=1,
+            source_trust=source_trust,
+        ),
+        credentials,
+    )
+
+
+def describe_provision(profile: Path, source_credentials: Path) -> ProvisionDescription:
+    return _prepare_provision(
+        profile,
+        source_credentials,
+        source_trust=SourceTrust.PRIVATE_LOCAL_SOURCE,
+    )[0]
 
 
 def _mkdir_private(path: Path) -> None:
@@ -322,15 +430,12 @@ def _remove_owned_tree(root: Path, expected_identity: tuple[int, int]) -> None:
     shutil.rmtree(root)
 
 
-def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfile:
-    """Create exactly one persistent profile from an explicitly chosen source.
+def _create_profile(
+    description: ProvisionDescription,
+    credentials: bytes,
+) -> ClaudeE2EProfile:
+    """Create a private profile from one already validated in-memory login record."""
 
-    This function never overwrites a profile and never calls Claude, a browser,
-    or Sensai.  It copies only ``claudeAiOauth`` from the supplied credentials.
-    """
-
-    description = describe_provision(profile, source_credentials)
-    credentials = _minimal_credentials(source_credentials)
     root = description.profile
     root.parent.mkdir(parents=True, exist_ok=True)
     created_identity: tuple[int, int] | None = None
@@ -354,7 +459,12 @@ def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfi
             _write_private(config / ".credentials.json", credentials)
             _write_private(
                 root / "manifest.json",
-                (json.dumps(_profile_manifest(credentials), sort_keys=True) + "\n").encode(),
+                (
+                    json.dumps(
+                        _profile_manifest(credentials, description.source_trust), sort_keys=True
+                    )
+                    + "\n"
+                ).encode(),
             )
     except BaseException:
         if (
@@ -367,6 +477,33 @@ def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfi
             _remove_owned_tree(root, created_identity)
         raise
     return ClaudeE2EProfile(root)
+
+
+def provision_profile(profile: Path, source_credentials: Path) -> ClaudeE2EProfile:
+    """Create a profile from one strictly private Linux Claude source."""
+
+    description, credentials = _prepare_provision(
+        profile,
+        source_credentials,
+        source_trust=SourceTrust.PRIVATE_LOCAL_SOURCE,
+    )
+    return _create_profile(description, credentials)
+
+
+def provision_trusted_current_profile(profile: Path) -> ClaudeE2EProfile:
+    """One-time user-approved migration from exactly the configured current source.
+
+    This is deliberately the only path that accepts a source outside the
+    private-local contract.  It reads the source once, reduces it to Claude's
+    login record in memory, and never reads that source again.
+    """
+
+    description, credentials = _prepare_provision(
+        profile,
+        _configured_current_credentials_path(),
+        source_trust=SourceTrust.USER_APPROVED_CURRENT_SOURCE_ONCE,
+    )
+    return _create_profile(description, credentials)
 
 
 def _load_profile(profile: Path) -> ClaudeE2EProfile:
@@ -385,14 +522,16 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
         raise ClaudeE2EProfileError("persistent profile manifest is invalid") from error
     if not isinstance(value, dict):
         raise ClaudeE2EProfileError("persistent profile manifest is not recognized")
-    expected_manifest_fields = set(_MANIFEST) | {"claude_login_sha256"}
+    expected_manifest_fields = set(_MANIFEST) | {"claude_login_sha256", "source_trust"}
     digest = value.get("claude_login_sha256")
+    source_trust = value.get("source_trust")
     if (
         set(value) != expected_manifest_fields
         or {key: value[key] for key in _MANIFEST} != _MANIFEST
         or not isinstance(digest, str)
         or len(digest) != 64
         or any(character not in "0123456789abcdef" for character in digest)
+        or source_trust not in {item.value for item in SourceTrust}
     ):
         raise ClaudeE2EProfileError("persistent profile manifest is not recognized")
     result = ClaudeE2EProfile(root)
@@ -571,7 +710,7 @@ def _source_from_arguments(arguments: argparse.Namespace) -> Path:
     if isinstance(source, Path):
         return source
     if arguments.detect_source is True:
-        return discover_current_credentials()
+        return _configured_current_credentials_path()
     raise ClaudeE2EProfileError("choose --source-credentials or --detect-source")
 
 
@@ -583,11 +722,24 @@ def main(argv: list[str] | None = None) -> int:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--source-credentials", type=Path)
     source.add_argument("--detect-source", action="store_true")
+    source.add_argument("--trust-current-credentials-once", action="store_true")
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--dry-run", action="store_true")
     action.add_argument("--provision", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.trust_current_credentials_once and not arguments.provision:
+        parser.error("--trust-current-credentials-once requires --provision")
     try:
+        if arguments.trust_current_credentials_once:
+            provisioned = provision_trusted_current_profile(arguments.profile)
+            print(
+                "Claude E2E profile provisioned with one user-approved current Claude login "
+                f"record; model={CLAUDE_E2E_MODEL}; plugins, browser data, and Sensai access "
+                "were not copied."
+            )
+            if not provisioned.root.exists():  # pragma: no cover
+                raise AssertionError("provisioned profile disappeared")
+            return 0
         credentials = _source_from_arguments(arguments)
         if arguments.dry_run:
             print(describe_provision(arguments.profile, credentials).safe_summary())

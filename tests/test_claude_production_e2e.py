@@ -48,8 +48,9 @@ def _linux_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _profile(tmp_path: Path) -> Path:
-    source = tmp_path / "source" / ".credentials.json"
-    source.parent.mkdir(parents=True, exist_ok=True)
+    source = Path.home() / ".test-source" / ".credentials.json"
+    source.parent.mkdir(mode=0o700)
+    source.parent.chmod(0o700)
     source.write_text(json.dumps({"claudeAiOauth": {"token": "private-token"}}), encoding="utf-8")
     source.chmod(0o600)
     target = Path.home() / ".local" / "share" / "sensai-e2e"

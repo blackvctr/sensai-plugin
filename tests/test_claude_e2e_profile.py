@@ -14,10 +14,12 @@ from sensai_plugin import claude_e2e_profile as profile_module
 from sensai_plugin.claude_e2e_profile import (
     CLAUDE_E2E_MODEL,
     ClaudeE2EProfileError,
+    SourceTrust,
     create_fresh_run,
     describe_provision,
     main,
     provision_profile,
+    provision_trusted_current_profile,
 )
 
 
@@ -42,8 +44,9 @@ def _profile_path() -> Path:
 
 
 def _source_path(tmp_path: Path) -> Path:
-    source = tmp_path / "source-profile" / ".credentials.json"
-    source.parent.mkdir()
+    source = Path.home() / ".private-source" / ".credentials.json"
+    source.parent.mkdir(mode=0o700)
+    source.parent.chmod(0o700)
     return source
 
 
@@ -55,6 +58,15 @@ def _credentials(path: Path) -> dict[str, object]:
     path.write_text(json.dumps(value), encoding="utf-8")
     path.chmod(0o600)
     return value
+
+
+def _current_unsafe_source() -> Path:
+    source = Path.home() / ".claude" / ".credentials.json"
+    source.parent.mkdir(mode=0o700)
+    _credentials(source)
+    source.parent.chmod(0o777)
+    source.chmod(0o777)
+    return source
 
 
 def test_describe_provision_reads_only_one_explicit_valid_credential_file(tmp_path: Path) -> None:
@@ -117,9 +129,200 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
         "auth_records": ["claudeAiOauth"],
         "format_version": 1,
         "model": "claude-sonnet-5",
+        "source_trust": SourceTrust.PRIVATE_LOCAL_SOURCE.value,
     }
     assert isinstance(manifest["claude_login_sha256"], str)
     assert len(manifest["claude_login_sha256"]) == 64
+
+
+def test_normal_provision_rejects_a_world_writable_source(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    source.chmod(0o777)
+
+    with pytest.raises(ClaudeE2EProfileError, match="private and owned"):
+        provision_profile(_profile_path(), source)
+
+    assert not _profile_path().exists()
+
+
+def test_normal_provision_rejects_a_source_under_development_or_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+
+    monkeypatch.setattr(profile_module, "DEVELOPMENT_ROOT", source.parent)
+    with pytest.raises(ClaudeE2EProfileError, match="mounted and development"):
+        provision_profile(_profile_path(), source)
+
+    other_development = tmp_path / "not-development"
+    other_development.mkdir()
+    monkeypatch.setattr(profile_module, "DEVELOPMENT_ROOT", other_development)
+    monkeypatch.setattr(profile_module, "MOUNTED_ROOT", source.parent)
+    with pytest.raises(ClaudeE2EProfileError, match="mounted and development"):
+        provision_profile(_profile_path(), source)
+
+
+def test_normal_provision_rejects_a_symlinked_source_parent(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    linked_parent = Path.home() / ".linked-source"
+    linked_parent.symlink_to(source.parent)
+
+    with pytest.raises(ClaudeE2EProfileError, match="symlinks"):
+        provision_profile(_profile_path(), linked_parent / ".credentials.json")
+
+
+def test_one_time_current_migration_copies_only_minimal_login_and_never_revisits_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _current_unsafe_source()
+    original = json.loads(source.read_text(encoding="utf-8"))
+    reads = 0
+    original_read = profile_module._read_regular_bytes
+
+    def read_once(path: Path, *, require_private_owner: bool = False) -> bytes:
+        nonlocal reads
+        result = original_read(path, require_private_owner=require_private_owner)
+        if path == source:
+            reads += 1
+            source.write_text(
+                json.dumps({"claudeAiOauth": {"accessToken": "later-login"}}),
+                encoding="utf-8",
+            )
+            source.chmod(0o777)
+        return result
+
+    monkeypatch.setattr(profile_module, "_read_regular_bytes", read_once)
+    profile = provision_trusted_current_profile(_profile_path())
+
+    assert reads == 1
+    assert json.loads(profile.baseline_credentials.read_text(encoding="utf-8")) == {
+        "claudeAiOauth": original["claudeAiOauth"]
+    }
+    assert profile.root.stat().st_mode & 0o777 == 0o700
+    assert profile.baseline_credentials.stat().st_mode & 0o777 == 0o600
+    manifest = json.loads((profile.root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["source_trust"] == SourceTrust.USER_APPROVED_CURRENT_SOURCE_ONCE.value
+    assert "mcpOAuth" not in profile.baseline_credentials.read_text(encoding="utf-8")
+
+    source.unlink()
+    with create_fresh_run(profile.root) as run:
+        assert run.work.is_dir()
+
+
+def test_one_time_current_migration_rejects_invalid_source_without_creating_target() -> None:
+    source = Path.home() / ".claude" / ".credentials.json"
+    source.parent.mkdir(mode=0o777)
+    source.write_text("not json", encoding="utf-8")
+    source.chmod(0o777)
+
+    with pytest.raises(ClaudeE2EProfileError, match="valid JSON"):
+        provision_trusted_current_profile(_profile_path())
+
+    assert not _profile_path().exists()
+
+
+def test_one_time_current_migration_rejects_a_source_changed_before_opening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _current_unsafe_source()
+    original_open = os.open
+
+    def replace_before_open(path: str | Path, flags: int, mode: int = 0o777) -> int:
+        if Path(path) == source:
+            source.write_text(
+                json.dumps({"claudeAiOauth": {"accessToken": "replacement-login"}}),
+                encoding="utf-8",
+            )
+            source.chmod(0o777)
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+
+    with pytest.raises(ClaudeE2EProfileError, match="changed while reading"):
+        provision_trusted_current_profile(_profile_path())
+
+    assert not _profile_path().exists()
+
+
+def test_one_time_current_migration_removes_only_its_partial_target_on_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _current_unsafe_source()
+    original_write = profile_module._write_private
+
+    def fail_only_for_manifest(path: Path, content: bytes) -> None:
+        if path.name == "manifest.json":
+            raise RuntimeError("stop before profile publication")
+        original_write(path, content)
+
+    monkeypatch.setattr(profile_module, "_write_private", fail_only_for_manifest)
+
+    with pytest.raises(RuntimeError, match="stop before profile publication"):
+        provision_trusted_current_profile(_profile_path())
+
+    assert not _profile_path().exists()
+
+
+def test_one_time_current_migration_cli_requires_explicit_provision_and_never_prints_login(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _current_unsafe_source()
+    source.write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": "do-not-print"}}), encoding="utf-8"
+    )
+    source.chmod(0o777)
+
+    with pytest.raises(SystemExit) as dry_run:
+        main(
+            [
+                "--profile",
+                str(_profile_path()),
+                "--trust-current-credentials-once",
+                "--dry-run",
+            ]
+        )
+    assert dry_run.value.code == 2
+    assert "do-not-print" not in capsys.readouterr().out
+
+    assert (
+        main(
+            [
+                "--profile",
+                str(_profile_path()),
+                "--trust-current-credentials-once",
+                "--provision",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "do-not-print" not in output
+    assert "user-approved current Claude login record" in output
+
+
+def test_one_time_current_migration_cli_rejects_an_unrelated_source_argument(
+    tmp_path: Path,
+) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+
+    with pytest.raises(SystemExit) as captured:
+        main(
+            [
+                "--profile",
+                str(_profile_path()),
+                "--trust-current-credentials-once",
+                "--source-credentials",
+                str(source),
+                "--provision",
+            ]
+        )
+
+    assert captured.value.code == 2
+    assert not _profile_path().exists()
 
 
 def test_provision_refuses_existing_target_without_overwriting_it(tmp_path: Path) -> None:
@@ -161,7 +364,7 @@ def test_provision_rejects_symlinked_or_repository_target(tmp_path: Path) -> Non
     linked = tmp_path / "linked-credentials.json"
     linked.symlink_to(source)
 
-    with pytest.raises(ClaudeE2EProfileError, match="regular file"):
+    with pytest.raises(ClaudeE2EProfileError, match="symlinks"):
         provision_profile(_profile_path(), linked)
 
     with pytest.raises(ClaudeE2EProfileError, match="outside the plugin repository"):
@@ -458,7 +661,7 @@ def test_provision_rejects_profile_when_private_modes_cannot_be_observed(
 
     with patch(
         "sensai_plugin.claude_e2e_profile.stat.S_IMODE", return_value=0o777
-    ), pytest.raises(ClaudeE2EProfileError, match="Linux filesystem"):
+    ), pytest.raises(ClaudeE2EProfileError, match="private"):
         provision_profile(target, source)
 
     assert not target.exists()
