@@ -84,6 +84,10 @@ through another explicit migration. The runner never rereads the old source.
 copies the two minimal Claude auth records into its isolated configuration, and
 supplies all of these isolated locations to the future Claude process:
 
+- `claudeAiOauth` is written only to
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR/.credentials.json`;
+- `oauthAccount` is written only to `CLAUDE_CONFIG_DIR/.claude.json`.
+
 - `HOME`
 - `CLAUDE_CONFIG_DIR`
 - `CLAUDE_SECURESTORAGE_CONFIG_DIR`

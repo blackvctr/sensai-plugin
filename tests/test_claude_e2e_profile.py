@@ -191,7 +191,10 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
     assert copied == {"claudeAiOauth": original["claudeAiOauth"]}
     assert not (profile.root / "baseline" / "config" / "history.jsonl").exists()
     assert not (profile.root / "baseline" / "config" / "plugins").exists()
-    assert not (profile.root / "baseline" / "secure-storage").exists()
+    assert profile.baseline_credentials == (
+        profile.root / "baseline" / "secure-storage" / ".credentials.json"
+    )
+    assert not (profile.root / "baseline" / "config" / ".credentials.json").exists()
     assert profile.root.stat().st_mode & 0o777 == 0o700
     assert baseline.stat().st_mode & 0o777 == 0o600
     assert baseline_account.stat().st_mode & 0o777 == 0o600
@@ -607,7 +610,7 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
         assert expected_executable in opener_source
         assert "os.execv(FIREFOX_EXECUTABLE, (FIREFOX_EXECUTABLE, raw_url))" in opener_source
         copied = json.loads(
-            (run.root / "config" / ".credentials.json").read_text(encoding="utf-8")
+            (run.root / "secure-storage" / ".credentials.json").read_text(encoding="utf-8")
         )
         assert copied == {
             "claudeAiOauth": {"accessToken": "private-Claude-token", "expiresAt": 123}
@@ -618,6 +621,7 @@ def test_fresh_run_has_new_complete_environment_and_is_removed_after_context(
         assert copied_account == {
             "oauthAccount": {"accountUuid": "private-account", "emailAddress": "private@example"}
         }
+        assert not (run.root / "config" / ".credentials.json").exists()
         assert not (run.root / "home" / ".claude.json").exists()
         expected_roots = {
             "HOME": run.root / "home",

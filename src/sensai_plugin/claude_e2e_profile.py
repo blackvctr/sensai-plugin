@@ -96,7 +96,7 @@ class ClaudeE2EProfile:
 
     @property
     def baseline_credentials(self) -> Path:
-        return self.root / "baseline" / "config" / ".credentials.json"
+        return self.root / "baseline" / "secure-storage" / ".credentials.json"
 
     @property
     def baseline_account_config(self) -> Path:
@@ -543,10 +543,12 @@ def _create_profile(
         with _profile_lock(staging):
             baseline = staging / "baseline"
             config = baseline / "config"
+            secure_storage = baseline / "secure-storage"
             _mkdir_private(baseline)
             _mkdir_private(config)
+            _mkdir_private(secure_storage)
             _mkdir_private(staging / "runs")
-            _write_private(config / ".credentials.json", credentials)
+            _write_private(secure_storage / ".credentials.json", credentials)
             _write_private(config / ".claude.json", account_config)
             _write_private(
                 staging / "manifest.json",
@@ -819,7 +821,7 @@ def create_fresh_run(profile: Path) -> Iterator[ClaudeE2ERun]:
             )
             environment = _run_environment(run_root, firefox_opener)
             _write_private(
-                Path(environment["CLAUDE_CONFIG_DIR"]) / ".credentials.json",
+                Path(environment["CLAUDE_SECURESTORAGE_CONFIG_DIR"]) / ".credentials.json",
                 _load_baseline_credentials(persistent.baseline_credentials),
             )
             _write_private(
