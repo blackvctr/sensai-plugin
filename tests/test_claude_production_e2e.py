@@ -87,7 +87,15 @@ def _operator_files(
     identity = root / "local-e2e-proof-identity"
     config.write_bytes(
         config_bytes
-        or json.dumps({"schema": "sensai-local-e2e-ssh-v1", "host": "proof.example", "user": "sensai_proof", "port": 22, "identity_file": "local-e2e-proof-identity"}).encode()
+        or json.dumps(
+            {
+                "schema": "sensai-local-e2e-ssh-v1",
+                "host": "proof.example",
+                "user": "sensai_proof",
+                "port": 22,
+                "identity_file": "local-e2e-proof-identity",
+            }
+        ).encode()
     )
     known_hosts.write_text("proof.example ssh-ed25519 public-key\n", encoding="utf-8")
     identity.write_text("private key\n", encoding="utf-8")
