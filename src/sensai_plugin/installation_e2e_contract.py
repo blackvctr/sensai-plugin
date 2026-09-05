@@ -20,6 +20,21 @@ from urllib.parse import parse_qsl, urlsplit
 CLAUDE_SONNET_5_MODEL = "claude-sonnet-5"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 README_PATH = REPOSITORY_ROOT / "README.md"
+CLAUDE_LINUX_COMMANDS = (
+    "claude plugin marketplace add blackvctr/sensai-plugin",
+    "claude plugin install sensai@sensai --scope user",
+    'script -q -c "claude mcp login plugin:sensai:sensai" /dev/null',
+)
+_CLAUDE_TYPED_STEPS = (
+    ("marketplace_add", {"repository": "blackvctr/sensai-plugin"}),
+    ("plugin_install", {"plugin": "sensai@sensai", "scope": "user"}),
+    ("sensai_login", {"server": "plugin:sensai:sensai", "terminal": "linux-script"}),
+)
+_CHATGPT_TYPED_STEPS = (
+    ("marketplace_add", {"repository": "blackvctr/sensai-plugin"}),
+    ("plugin_install", {"plugin": "sensai@sensai"}),
+    ("sensai_login", {"server": "sensai"}),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,11 +257,7 @@ def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
 
     claude_steps = _manifest_steps(
         russian["steps"],
-        (
-            ("marketplace_add", "claude plugin marketplace add blackvctr/sensai-plugin"),
-            ("plugin_install", "claude plugin install sensai@sensai --scope user"),
-            ("sensai_login", 'script -q -c "claude mcp login plugin:sensai:sensai" /dev/null'),
-        ),
+        _CLAUDE_TYPED_STEPS,
         "claude_desktop.russian.steps",
         extra_steps=1,
     )
@@ -260,11 +271,7 @@ def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
     chatgpt = _manifest_object(hosts["chatgpt_desktop"], {"steps"}, "chatgpt_desktop")
     _manifest_steps(
         chatgpt["steps"],
-        (
-            ("marketplace_add", "codex plugin marketplace add blackvctr/sensai-plugin"),
-            ("plugin_install", "codex plugin add sensai@sensai"),
-            ("sensai_login", "codex mcp login sensai"),
-        ),
+        _CHATGPT_TYPED_STEPS,
         "chatgpt_desktop.steps",
     )
 
@@ -317,12 +324,16 @@ def _manifest_list(value: object, length: int, location: str) -> list[object]:
 
 
 def _manifest_steps(
-    value: object, expected: tuple[tuple[str, str], ...], location: str, *, extra_steps: int = 0
+    value: object,
+    expected: tuple[tuple[str, dict[str, str]], ...],
+    location: str,
+    *,
+    extra_steps: int = 0,
 ) -> list[object]:
     steps = _manifest_list(value, len(expected) + extra_steps, location)
-    for item, (kind, command) in zip(steps[: len(expected)], expected, strict=True):
-        step = _manifest_object(item, {"kind", "command"}, location)
-        if step["kind"] != kind or step["command"] != command:
+    for item, (kind, values) in zip(steps[: len(expected)], expected, strict=True):
+        step = _manifest_object(item, {"kind", *values}, location)
+        if step["kind"] != kind or any(step[key] != expected for key, expected in values.items()):
             raise ValueError(f"README manifest step is invalid: {location}")
     return steps
 

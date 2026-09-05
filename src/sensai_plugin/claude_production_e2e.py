@@ -30,6 +30,7 @@ from urllib.request import Request, urlopen
 from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_SONNET_5_MODEL,
+    CLAUDE_LINUX_COMMANDS,
     PublicReadmeContract,
     _public_contract_from_markdown,
 )
@@ -770,11 +771,12 @@ def _is_exact_public_sensai_inventory(entries: object) -> bool:
 
 
 def _e2e_allowed_tools(new_chat_uri: str) -> tuple[str, ...]:
+    marketplace_add, plugin_install, sensai_login = CLAUDE_LINUX_COMMANDS
     return (
         _E2E_WEBFETCH_PERMISSION,
-        "Bash(claude plugin marketplace add blackvctr/sensai-plugin)",
-        "Bash(claude plugin install sensai@sensai --scope user)",
-        'Bash(script -q -c "claude mcp login plugin:sensai:sensai" /dev/null)',
+        f"Bash({marketplace_add})",
+        f"Bash({plugin_install})",
+        f"Bash({sensai_login})",
         f"Bash({_new_chat_bash_command(new_chat_uri)})",
     )
 

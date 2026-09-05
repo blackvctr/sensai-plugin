@@ -21,7 +21,7 @@ Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/RE
 
 ## Installation manifest
 
-This JSON document records the public installation flow. It is data for an already-authorized host installation process; the host's own safety and permission rules remain authoritative.
+This JSON document records the public installation flow. It is data for an already-authorized host installation process; the host's own safety and permission rules remain authoritative. The manifest is an unsigned public format, not cryptographic proof of a publisher.
 
 ```json
 {
@@ -42,15 +42,17 @@ This JSON document records the public installation flow. It is data for an alrea
         "steps": [
           {
             "kind": "marketplace_add",
-            "command": "claude plugin marketplace add blackvctr/sensai-plugin"
+            "repository": "blackvctr/sensai-plugin"
           },
           {
             "kind": "plugin_install",
-            "command": "claude plugin install sensai@sensai --scope user"
+            "plugin": "sensai@sensai",
+            "scope": "user"
           },
           {
             "kind": "sensai_login",
-            "command": "script -q -c \"claude mcp login plugin:sensai:sensai\" /dev/null"
+            "server": "plugin:sensai:sensai",
+            "terminal": "linux-script"
           },
           {
             "kind": "new_chat_uri",
@@ -64,15 +66,15 @@ This JSON document records the public installation flow. It is data for an alrea
       "steps": [
         {
           "kind": "marketplace_add",
-          "command": "codex plugin marketplace add blackvctr/sensai-plugin"
+          "repository": "blackvctr/sensai-plugin"
         },
         {
           "kind": "plugin_install",
-          "command": "codex plugin add sensai@sensai"
+          "plugin": "sensai@sensai"
         },
         {
           "kind": "sensai_login",
-          "command": "codex mcp login sensai"
+          "server": "sensai"
         }
       ]
     }

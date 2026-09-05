@@ -67,8 +67,8 @@ def test_rejects_unknown_duplicate_or_mismatched_install_manifest_data() -> None
             1,
         ),
         markdown.replace(
-            "claude plugin install sensai@sensai --scope user",
-            "claude plugin install another-plugin --scope user",
+            '"plugin": "sensai@sensai",',
+            '"plugin": "another-plugin",',
             1,
         ),
     )

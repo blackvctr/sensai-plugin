@@ -50,18 +50,20 @@ def test_public_copy_paste_prompts_and_manifest_request_remain_exact() -> None:
     assert contract.russian_new_chat_request.startswith("Проконсультируйся с Sensai.")
 
 
-def test_manifest_keeps_only_typed_local_installation_steps() -> None:
+def test_manifest_keeps_only_typed_local_installation_values() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
 
-    for command in (
-        "claude plugin marketplace add blackvctr/sensai-plugin",
-        "claude plugin install sensai@sensai --scope user",
-        'script -q -c \\"claude mcp login plugin:sensai:sensai\\" /dev/null',
-        "codex plugin marketplace add blackvctr/sensai-plugin",
-        "codex plugin add sensai@sensai",
-        "codex mcp login sensai",
+    for value in (
+        '"repository": "blackvctr/sensai-plugin"',
+        '"plugin": "sensai@sensai"',
+        '"scope": "user"',
+        '"server": "plugin:sensai:sensai"',
+        '"terminal": "linux-script"',
+        '"server": "sensai"',
     ):
-        assert command in readme
+        assert value in readme
+    assert "claude plugin marketplace add" not in readme
+    assert "claude mcp login" not in readme
 
 
 def test_sensai_skill_description_covers_a_person_starting_consultation() -> None:
