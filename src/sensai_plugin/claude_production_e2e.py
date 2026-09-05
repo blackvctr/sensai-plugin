@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -33,6 +34,7 @@ from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_LINUX_ACTIONS,
     CLAUDE_SONNET_5_MODEL,
+    README_PATH,
     PublicReadmeContract,
     _public_contract_from_markdown,
 )
@@ -46,24 +48,69 @@ MAX_STREAM_BYTES = 2 * 1024 * 1024
 MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
+PUBLIC_INSTALL_PROMPT = f"Установи Sensai {PUBLIC_README_URL}"
 _E2E_WEBFETCH_PERMISSION = "WebFetch(domain:raw.githubusercontent.com)"
 _PUBLIC_RAW_HOST = "raw.githubusercontent.com"
 _PUBLIC_RAW_PREFIX = "/blackvctr/sensai-plugin/main/"
 _OAUTH_ENTRY_HOSTS = frozenset({"black-vector.com", "accounts.google.com"})
-_BROWSER_TOOL = Path(
-    "/mnt/c/gdrive/dev/.skills/use-windows-firefox/scripts/browser_tool_pw.py"
-)
+_BROWSER_TOOL = Path("/mnt/c/gdrive/dev/.skills/use-windows-firefox/scripts/browser_tool_pw.py")
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
 _LATIN = re.compile(r"[A-Za-z]")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 
 class ProductionE2EError(RuntimeError):
     """One safe category explaining an installation acceptance failure."""
 
 
+def _validate_expected_readme_sha256(value: str) -> str:
+    if not _SHA256_HEX.fullmatch(value):
+        raise ProductionE2EError("public_readme_sha256_invalid")
+    return value
+
+
+def fetch_public_readme_sha256(expected_sha256: str) -> str:
+    """Fetch the public README and match it to one explicit candidate.
+
+    The README is material Claude may read, not runner instructions.  The
+    caller supplies the candidate digest so a comparison can safely test a
+    non-published README without teaching the runner to parse its contents.
+    """
+
+    expected = _validate_expected_readme_sha256(expected_sha256)
+    request = Request(PUBLIC_README_URL, headers={"Accept": "text/plain"})
+    try:
+        with urlopen(request, timeout=20) as response:
+            if response.geturl() != PUBLIC_README_URL:
+                raise ProductionE2EError("public_readme_redirected")
+            body = response.read(MAX_PUBLIC_README_BYTES + 1)
+    except OSError as error:
+        raise ProductionE2EError("public_readme_unavailable") from error
+    if len(body) > MAX_PUBLIC_README_BYTES:
+        raise ProductionE2EError("public_readme_too_large")
+    actual = hashlib.sha256(body).hexdigest()
+    if not hmac.compare_digest(actual, expected):
+        raise ProductionE2EError("public_readme_sha256_mismatch")
+    return actual
+
+
+def load_local_installation_contract() -> PublicReadmeContract:
+    """Load local acceptance boundaries, never instructions for Claude."""
+
+    try:
+        return _public_contract_from_markdown(README_PATH.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ProductionE2EError("local_installation_contract_invalid") from error
+
+
 def fetch_public_readme_contract() -> PublicReadmeContract:
+    """Legacy v2 helper kept for existing transcript-only tests.
+
+    Production execution uses :func:`fetch_public_readme_sha256` instead.
+    """
+
     request = Request(PUBLIC_README_URL, headers={"Accept": "text/plain"})
     try:
         with urlopen(request, timeout=20) as response:
@@ -75,12 +122,9 @@ def fetch_public_readme_contract() -> PublicReadmeContract:
     if len(body) > MAX_PUBLIC_README_BYTES:
         raise ProductionE2EError("public_readme_too_large")
     try:
-        contract = _public_contract_from_markdown(body.decode("utf-8"))
+        return _public_contract_from_markdown(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
         raise ProductionE2EError("public_readme_invalid") from error
-    if contract.russian_install_prompt != f"Установи Sensai {PUBLIC_README_URL}":
-        raise ProductionE2EError("public_readme_prompt_not_exact")
-    return contract
 
 
 def resolve_installed_wsl_claude() -> str:
@@ -110,6 +154,9 @@ class ToolKind(StrEnum):
     MARKETPLACE_ADD = "public_marketplace_add"
     PLUGIN_INSTALL = "public_plugin_install"
     NEW_CHAT_URI = "new_chat_uri"
+    PUBLIC_README_FETCH = "public_readme_fetch"
+    PUBLIC_METADATA_FETCH = "public_metadata_fetch"
+    PUBLIC_METADATA_BASH = "public_metadata_bash"
     FORBIDDEN_BROWSER_MODE = "forbidden_browser_mode"
     OTHER = "other"
 
@@ -119,6 +166,15 @@ class PermissionDecision(StrEnum):
 
     ALLOW = "allow"
     DENY = "deny"
+
+
+class FirstTextKind(StrEnum):
+    """A closed, redacted reading of Claude's first visible reply."""
+
+    NONE = "none"
+    TRUST_QUESTION = "trust_question"
+    REFUSAL = "refusal"
+    OTHER = "other"
 
 
 class ExitCategory(StrEnum):
@@ -195,6 +251,9 @@ class AgentEvidence:
     stderr_seen: bool
     sensai_connection_verified: bool = False
     public_sensai_plugin_installed: bool = False
+    tool_intents: tuple[ToolKind, ...] = ()
+    denied_tool_intents: tuple[ToolKind, ...] = ()
+    first_text_kind: FirstTextKind = FirstTextKind.NONE
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -224,6 +283,16 @@ class ProductionE2EReport:
                 self.new_chat_uri_attempted,
             )
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FirstComparisonReport:
+    """Redacted evidence from the first safely stopped public README run."""
+
+    public_readme_sha256: str
+    first_text_kind: FirstTextKind
+    first_tool_intent: ToolKind | None
+    denied_tool_intents: tuple[ToolKind, ...]
 
 
 class ClaudeDriver(Protocol):
@@ -291,6 +360,27 @@ class _TextAccumulator:
     def matches(self, expected: str) -> bool:
         expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
         return self.digest.digest() == expected_digest
+
+
+def _classify_first_text(text: str) -> FirstTextKind:
+    """Keep a useful outcome category without retaining Claude's reply."""
+
+    normalized = text.casefold()
+    refusal_markers = (
+        "не могу",
+        "не буду",
+        "отказыва",
+        "can't",
+        "cannot",
+        "won't",
+        "refus",
+    )
+    if any(marker in normalized for marker in refusal_markers):
+        return FirstTextKind.REFUSAL
+    trust_markers = ("довер", "trust", "подтверд", "confirm", "approval")
+    if any(marker in normalized for marker in trust_markers):
+        return FirstTextKind.TRUST_QUESTION
+    return FirstTextKind.OTHER
 
 
 @dataclass(slots=True)
@@ -405,9 +495,7 @@ def _is_allowed_oauth_entry_url(value: object) -> bool:
         return False
     if parsed.hostname == "black-vector.com":
         return parsed.path.startswith("/sensai")
-    return (
-        parsed.hostname == "accounts.google.com"
-    )
+    return parsed.hostname == "accounts.google.com"
 
 
 def _is_direct_public_curl(command: object) -> bool:
@@ -444,6 +532,7 @@ class InstallationPermission:
     """A redacted decision for one permission request from Claude."""
 
     decision: PermissionDecision
+    intent: ToolKind
     action: ToolKind | None = None
 
 
@@ -455,7 +544,9 @@ class InstallationPermissionPolicy:
         *,
         new_chat_uri: str,
         claude_linux_actions: tuple[tuple[str, ...], ...],
+        first_comparison: bool = False,
     ) -> None:
+        self._first_comparison = first_comparison
         self._new_chat_uri = new_chat_uri
         if len(claude_linux_actions) != 4:
             raise ValueError("installation action manifest is invalid")
@@ -477,35 +568,60 @@ class InstallationPermissionPolicy:
             raise ValueError("installation action manifest is invalid")
         self._actions = normalized
 
-    def decide(self, tool_name: str, tool_input: object) -> InstallationPermission:
+    def _intent(self, tool_name: str, tool_input: object) -> ToolKind:
         if not isinstance(tool_input, dict):
-            return InstallationPermission(PermissionDecision.DENY)
+            return ToolKind.OTHER
         if tool_name == "WebFetch" and _is_public_raw_url(tool_input.get("url")):
-            return InstallationPermission(PermissionDecision.ALLOW)
+            if tool_input.get("url") == PUBLIC_README_URL:
+                return ToolKind.PUBLIC_README_FETCH
+            return ToolKind.PUBLIC_METADATA_FETCH
         if tool_name != "Bash":
-            return InstallationPermission(PermissionDecision.DENY)
+            return ToolKind.OTHER
         command = tool_input.get("command")
         if _is_direct_public_curl(command):
-            return InstallationPermission(PermissionDecision.ALLOW)
+            return ToolKind.PUBLIC_METADATA_BASH
+        argv = _bash_action_argv(command)
+        if argv is None:
+            return ToolKind.OTHER
+        return self._actions.get(argv, ToolKind.OTHER)
+
+    def decide(self, tool_name: str, tool_input: object) -> InstallationPermission:
+        intent = self._intent(tool_name, tool_input)
+        if intent is ToolKind.PUBLIC_README_FETCH:
+            return InstallationPermission(PermissionDecision.ALLOW, intent)
+        if intent is ToolKind.PUBLIC_METADATA_FETCH:
+            return InstallationPermission(
+                PermissionDecision.DENY if self._first_comparison else PermissionDecision.ALLOW,
+                intent,
+            )
+        if not isinstance(tool_input, dict) or tool_name != "Bash":
+            return InstallationPermission(PermissionDecision.DENY, intent)
+        command = tool_input.get("command")
+        if intent is ToolKind.PUBLIC_METADATA_BASH:
+            if self._first_comparison:
+                return InstallationPermission(PermissionDecision.DENY, intent)
+            return InstallationPermission(PermissionDecision.ALLOW, intent)
         argv = _bash_action_argv(command)
         kind = self._actions.get(argv, ToolKind.OTHER) if argv is not None else ToolKind.OTHER
         if kind is ToolKind.LOGIN:
             if not isinstance(command, str):
-                return InstallationPermission(PermissionDecision.DENY)
+                return InstallationPermission(PermissionDecision.DENY, intent)
             try:
                 wrapper = tuple(shlex.split(command, posix=True))
             except ValueError:
-                return InstallationPermission(PermissionDecision.DENY)
+                return InstallationPermission(PermissionDecision.DENY, intent)
             if wrapper != self._login_wrapper:
-                return InstallationPermission(PermissionDecision.DENY)
+                return InstallationPermission(PermissionDecision.DENY, intent)
+        if self._first_comparison:
+            return InstallationPermission(PermissionDecision.DENY, intent)
         if kind in {
             ToolKind.MARKETPLACE_ADD,
             ToolKind.PLUGIN_INSTALL,
             ToolKind.LOGIN,
             ToolKind.NEW_CHAT_URI,
         }:
-            return InstallationPermission(PermissionDecision.ALLOW, kind)
-        return InstallationPermission(PermissionDecision.DENY)
+            return InstallationPermission(PermissionDecision.ALLOW, intent, kind)
+        return InstallationPermission(PermissionDecision.DENY, intent)
 
 
 def _force_permission_request(tool_use_id: object, observed: set[str]) -> dict[str, object]:
@@ -1046,6 +1162,9 @@ class _OAuthBrowserHandoff:
 class SdkClaudeDriver(SubprocessClaudeDriver):
     """Use the documented Agent SDK callback instead of CLI shell allow rules."""
 
+    def __init__(self, *, first_comparison: bool = False) -> None:
+        self._first_comparison = first_comparison
+
     def run_agent(
         self,
         command: Sequence[str],
@@ -1110,10 +1229,18 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         policy = InstallationPermissionPolicy(
             new_chat_uri=expected_new_chat_uri,
             claude_linux_actions=tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS),
+            first_comparison=self._first_comparison,
         )
-        handoff = _OAuthBrowserHandoff.create(cwd, environment, expected_new_chat_uri)
+        handoff = (
+            None
+            if self._first_comparison
+            else _OAuthBrowserHandoff.create(cwd, environment, expected_new_chat_uri)
+        )
+        driver_environment = handoff.environment if handoff is not None else environment
         text_blocks: list[TextEvidence] = []
         calls: list[ToolKind] = []
+        intents: list[ToolKind] = []
+        denied_intents: list[ToolKind] = []
         results: list[ToolResultEvidence] = []
         event_order: list[str] = []
         outstanding: dict[str, ToolKind] = {}
@@ -1124,6 +1251,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         timed_out = False
         connection_verified = False
         plugin_verified = False
+        first_text_kind = FirstTextKind.NONE
 
         async def force_permission(
             _hook_input: Any, tool_use_id: str | None, _hook_context: Any
@@ -1134,25 +1262,28 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
             nonlocal connection_verified, plugin_verified
             tool_use_id = getattr(context, "tool_use_id", None)
             if not isinstance(tool_use_id, str) or tool_use_id not in pretool_ids:
+                denied_intents.append(ToolKind.OTHER)
                 return PermissionResultDeny(
                     message="Installation permission gate was not observed."
                 )
             decision = policy.decide(tool_name, tool_input)
+            intents.append(decision.intent)
             if decision.decision is PermissionDecision.DENY:
+                denied_intents.append(decision.intent)
                 return PermissionResultDeny(message="Not part of the Sensai installation flow.")
             if decision.action is ToolKind.NEW_CHAT_URI:
                 connection_verified = await asyncio.to_thread(
                     self.mcp_configuration_observed,
                     _status_command(executable),
                     cwd=cwd,
-                    environment=handoff.environment,
+                    environment=driver_environment,
                     timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
                 )
                 plugin_verified = await asyncio.to_thread(
                     self.public_sensai_plugin_installed,
                     _plugin_list_command(executable),
                     cwd=cwd,
-                    environment=handoff.environment,
+                    environment=driver_environment,
                     timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
                 )
                 if not connection_verified or not plugin_verified:
@@ -1166,7 +1297,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         options = ClaudeAgentOptions(
             cli_path=executable,
             cwd=cwd,
-            env=handoff.environment,
+            env=driver_environment,
             model=CLAUDE_SONNET_5_MODEL,
             tools=["WebFetch", "Bash"],
             allowed_tools=[],
@@ -1177,11 +1308,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
             setting_sources=[],
             skills=[],
             plugins=[],
-            hooks={
-                "PreToolUse": [
-                    HookMatcher(matcher="Bash|WebFetch", hooks=[force_permission])
-                ]
-            },
+            hooks={"PreToolUse": [HookMatcher(matcher="Bash|WebFetch", hooks=[force_permission])]},
             session_id=str(expected_session),
             max_turns=16,
             stderr=lambda _line: None,
@@ -1191,13 +1318,15 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         child_absent = False
         try:
             async def receive() -> None:
-                nonlocal result_seen, session_verified, terminal_error
+                nonlocal first_text_kind, result_seen, session_verified, terminal_error
                 await client.connect()
                 await client.query(prompt)
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
+                                if first_text_kind is FirstTextKind.NONE:
+                                    first_text_kind = _classify_first_text(block.text)
                                 accumulator = _TextAccumulator.new()
                                 accumulator.add(block.text)
                                 expected = (
@@ -1248,7 +1377,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                 disconnect_failed = True
             else:
                 disconnected = True
-            browser_cleaned = handoff.cleanup()
+            browser_cleaned = handoff is None or handoff.cleanup()
             child_absent = _owned_run_child_absent(cwd.parent)
             if disconnect_failed:
                 raise ProductionE2EError("claude_sdk_cleanup_failed")
@@ -1259,11 +1388,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
 
         successful = tuple(item.kind for item in results if item.succeeded)
         completed_cleanly = (
-            result_seen
-            and not terminal_error
-            and not timed_out
-            and disconnected
-            and child_absent
+            result_seen and not terminal_error and not timed_out and disconnected and child_absent
         )
         return AgentEvidence(
             result_seen=result_seen,
@@ -1290,6 +1415,9 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
             stderr_seen=False,
             sensai_connection_verified=connection_verified,
             public_sensai_plugin_installed=plugin_verified,
+            tool_intents=tuple(intents),
+            denied_tool_intents=tuple(denied_intents),
+            first_text_kind=first_text_kind,
         )
 
 
@@ -1359,20 +1487,84 @@ class ProductionSensaiE2E:
         self,
         *,
         profile: Path,
+        expected_public_readme_sha256: str,
         driver: ClaudeDriver | None = None,
-        contract_loader: Callable[[], PublicReadmeContract] = fetch_public_readme_contract,
+        contract_loader: Callable[[], PublicReadmeContract] = load_local_installation_contract,
+        public_readme_validator: Callable[[str], str] = fetch_public_readme_sha256,
         executable_resolver: Callable[[], str] = resolve_installed_wsl_claude,
+        first_comparison: bool = False,
     ) -> None:
         self._profile = profile
-        self._driver = driver or SdkClaudeDriver()
+        self._expected_public_readme_sha256 = _validate_expected_readme_sha256(
+            expected_public_readme_sha256
+        )
+        self._first_comparison = first_comparison
+        self._driver = driver or SdkClaudeDriver(first_comparison=first_comparison)
         self._contract_loader = contract_loader
+        self._public_readme_validator = public_readme_validator
         self._executable_resolver = executable_resolver
 
     def run(self) -> ProductionE2EReport:
+        """Run the full published-v2 acceptance path.
+
+        The public page is checked as one exact candidate before execution.
+        The prompt passed to Claude remains a fixed test input below.
+        """
+
+        if self._first_comparison:
+            raise ProductionE2EError("full_installation_not_available_in_first_comparison")
+        self._public_readme_validator(self._expected_public_readme_sha256)
         contract = self._contract_loader()
         executable = self._executable_resolver()
         with create_fresh_run(self._profile) as run:
             return self._run_inside_fresh_profile(run, contract, executable, uuid.uuid4())
+
+    def compare_first_response(self) -> FirstComparisonReport:
+        """Observe the first public-README reaction before effects are allowed.
+
+        Only an exact WebFetch of the README is permitted.  Metadata Bash and
+        every other proposed action are denied in the SDK callback and retained
+        only as closed categories in the returned receipt.
+        """
+
+        if not self._first_comparison:
+            raise ProductionE2EError("first_comparison_mode_required")
+        digest = self._public_readme_validator(self._expected_public_readme_sha256)
+        contract = self._contract_loader()
+        executable = self._executable_resolver()
+        with create_fresh_run(self._profile) as run:
+            if not self._driver.claude_authenticated(
+                _auth_status_command(executable),
+                cwd=run.work,
+                environment=run.environment,
+                timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
+            ):
+                raise ProductionE2EError("isolated_claude_auth_not_verified")
+            session = uuid.uuid4()
+            evidence = self._driver.run_agent(
+                _agent_command(
+                    executable,
+                    prompt=PUBLIC_INSTALL_PROMPT,
+                    session=session,
+                    claude_linux_actions=contract.claude_linux_actions,
+                ),
+                cwd=run.work,
+                environment=run.environment,
+                timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+                expected_visible_messages=(),
+                expected_session=session,
+                expected_new_chat_uri=contract.russian_new_chat_uri,
+            )
+        if evidence.timed_out:
+            raise ProductionE2EError("first_comparison_timed_out")
+        if evidence.stream_limit_exceeded or evidence.malformed or evidence.unclosed_block:
+            raise ProductionE2EError("first_comparison_stream_invalid")
+        return FirstComparisonReport(
+            public_readme_sha256=digest,
+            first_text_kind=evidence.first_text_kind,
+            first_tool_intent=evidence.tool_intents[0] if evidence.tool_intents else None,
+            denied_tool_intents=evidence.denied_tool_intents,
+        )
 
     def _run_inside_fresh_profile(
         self, run: ClaudeE2ERun, contract: PublicReadmeContract, executable: str, session: uuid.UUID
@@ -1388,7 +1580,7 @@ class ProductionSensaiE2E:
         installation = self._driver.run_agent(
             _agent_command(
                 executable,
-                prompt=contract.russian_install_prompt,
+                prompt=PUBLIC_INSTALL_PROMPT,
                 session=session,
                 claude_linux_actions=contract.claude_linux_actions,
             ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import runpy
@@ -13,10 +14,13 @@ import pytest
 
 from sensai_plugin.claude_e2e_profile import provision_profile
 from sensai_plugin.claude_production_e2e import (
+    PUBLIC_INSTALL_PROMPT,
+    PUBLIC_README_URL,
     AgentEvidence,
     ClaudeDriver,
     ExitCategory,
     ExitStage,
+    FirstTextKind,
     InstallationPermissionPolicy,
     PermissionDecision,
     ProductionE2EError,
@@ -35,6 +39,7 @@ from sensai_plugin.claude_production_e2e import (
     _is_allowed_oauth_entry_url,
     _is_exact_public_sensai_inventory,
     fetch_public_readme_contract,
+    fetch_public_readme_sha256,
 )
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_LINUX_ACTIONS,
@@ -199,6 +204,8 @@ def _runner(profile: Path, driver: ClaudeDriver) -> ProductionSensaiE2E:
         profile=profile,
         driver=driver,
         contract_loader=_contract,
+        expected_public_readme_sha256="0" * 64,
+        public_readme_validator=lambda expected: expected,
         executable_resolver=lambda: "claude",
     )
 
@@ -257,12 +264,55 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     auth, installation = driver.calls
     assert auth.command == ("claude", "auth", "status")
     assert installation.command[:2] == ("claude", "-p")
-    assert installation.command[-1].startswith("Установи Sensai ")
+    assert installation.command[-1] == PUBLIC_INSTALL_PROMPT
     assert installation.command[installation.command.index("--model") + 1] == "claude-sonnet-5"
     assert "--no-browser" not in installation.command
     assert installation.expected_new_chat_uri == _contract().russian_new_chat_uri
     assert all(call.cwd.name == "work" for call in driver.calls)
     assert not list((profile / "runs").iterdir())
+
+
+def test_installation_prompt_is_fixed_test_input_not_a_readme_value() -> None:
+    driver = _successful_driver()
+    changed_local_boundary = replace(_contract(), russian_install_prompt="другая строка")
+    runner = ProductionSensaiE2E(
+        profile=_profile(),
+        driver=driver,
+        contract_loader=lambda: changed_local_boundary,
+        expected_public_readme_sha256="a" * 64,
+        public_readme_validator=lambda expected: expected,
+        executable_resolver=lambda: "claude",
+    )
+
+    assert runner.run().complete
+    assert driver.calls[1].command[-1] == PUBLIC_INSTALL_PROMPT
+
+
+def test_first_comparison_keeps_only_redacted_first_reply_and_tool_categories() -> None:
+    evidence = replace(
+        _evidence(),
+        first_text_kind=FirstTextKind.TRUST_QUESTION,
+        tool_intents=(ToolKind.PUBLIC_README_FETCH, ToolKind.PUBLIC_METADATA_BASH),
+        denied_tool_intents=(ToolKind.PUBLIC_METADATA_BASH,),
+    )
+    driver = _Driver(evidence)
+    runner = ProductionSensaiE2E(
+        profile=_profile(),
+        driver=driver,
+        contract_loader=_contract,
+        expected_public_readme_sha256="b" * 64,
+        public_readme_validator=lambda expected: expected,
+        executable_resolver=lambda: "claude",
+        first_comparison=True,
+    )
+
+    report = runner.compare_first_response()
+
+    assert report.public_readme_sha256 == "b" * 64
+    assert report.first_text_kind is FirstTextKind.TRUST_QUESTION
+    assert report.first_tool_intent is ToolKind.PUBLIC_README_FETCH
+    assert report.denied_tool_intents == (ToolKind.PUBLIC_METADATA_BASH,)
+    assert driver.calls[1].command[-1] == PUBLIC_INSTALL_PROMPT
 
 
 def test_agent_command_exposes_tools_without_a_brittle_shell_allowlist() -> None:
@@ -357,16 +407,25 @@ def test_permission_policy_normalizes_quoting_but_rejects_shell_composition() ->
     policy = InstallationPermissionPolicy(new_chat_uri=uri, claude_linux_actions=actions)
 
     assert _bash_action_argv("claude plugin marketplace add blackvctr/sensai-plugin") == actions[0]
-    assert _bash_action_argv(
-        "script -q -c 'claude mcp login plugin:sensai:sensai' /dev/null"
-    ) == ("claude", "mcp", "login", "plugin:sensai:sensai")
-    assert policy.decide(
-        "Bash", {"command": "claude plugin marketplace add blackvctr/sensai-plugin"}
-    ).decision is PermissionDecision.ALLOW
+    assert _bash_action_argv("script -q -c 'claude mcp login plugin:sensai:sensai' /dev/null") == (
+        "claude",
+        "mcp",
+        "login",
+        "plugin:sensai:sensai",
+    )
+    assert (
+        policy.decide(
+            "Bash", {"command": "claude plugin marketplace add blackvctr/sensai-plugin"}
+        ).decision
+        is PermissionDecision.ALLOW
+    )
     assert policy.decide("Bash", {"command": f"xdg-open {uri!r}"}).action is ToolKind.NEW_CHAT_URI
-    assert policy.decide(
-        "Bash", {"command": "claude plugin marketplace add blackvctr/sensai-plugin; id"}
-    ).decision is PermissionDecision.DENY
+    assert (
+        policy.decide(
+            "Bash", {"command": "claude plugin marketplace add blackvctr/sensai-plugin; id"}
+        ).decision
+        is PermissionDecision.DENY
+    )
     # The native README wrapper is required because the bare login command has no TTY.
     assert (
         policy.decide("Bash", {"command": "claude mcp login plugin:sensai:sensai"}).decision
@@ -393,6 +452,32 @@ def test_permission_policy_allows_only_public_raw_repository_reads() -> None:
         is PermissionDecision.DENY
     )
     assert policy.decide("Read", {"file_path": "/etc/passwd"}).decision is PermissionDecision.DENY
+
+
+def test_first_comparison_allows_only_the_public_readme_fetch() -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(
+        new_chat_uri=actions[-1][1],
+        claude_linux_actions=actions,
+        first_comparison=True,
+    )
+    metadata = (
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        ".claude-plugin/marketplace.json"
+    )
+
+    assert (
+        policy.decide("WebFetch", {"url": PUBLIC_README_URL}).decision is PermissionDecision.ALLOW
+    )
+    metadata_fetch = policy.decide("WebFetch", {"url": metadata})
+    assert metadata_fetch.decision is PermissionDecision.DENY
+    assert metadata_fetch.intent is ToolKind.PUBLIC_METADATA_FETCH
+    metadata_bash = policy.decide("Bash", {"command": f"curl -fsSL {metadata}"})
+    assert metadata_bash.decision is PermissionDecision.DENY
+    assert metadata_bash.intent is ToolKind.PUBLIC_METADATA_BASH
+    other = policy.decide("Bash", {"command": "id"})
+    assert other.decision is PermissionDecision.DENY
+    assert other.intent is ToolKind.OTHER
 
 
 def test_oauth_entry_url_allows_only_sensai_or_google_without_credentials() -> None:
@@ -736,6 +821,24 @@ def test_public_readme_fetch_accepts_only_exact_url(monkeypatch: pytest.MonkeyPa
         fetch_public_readme_contract()
 
 
+def test_public_readme_sha256_matches_bytes_without_parsing_a_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sensai_plugin.claude_production_e2e as module
+
+    body = b"# Candidate\n\nThis document intentionally has no installation manifest.\n"
+    digest = hashlib.sha256(body).hexdigest()
+    monkeypatch.setattr(
+        module, "urlopen", lambda request, timeout: _Response(body, request.full_url)
+    )
+
+    assert fetch_public_readme_sha256(digest) == digest
+    with pytest.raises(ProductionE2EError, match="public_readme_sha256_mismatch"):
+        fetch_public_readme_sha256("0" * 64)
+    with pytest.raises(ProductionE2EError, match="public_readme_sha256_invalid"):
+        fetch_public_readme_sha256("not-a-digest")
+
+
 def _script_namespace() -> dict[str, object]:
     namespace = runpy.run_path(
         str(Path(__file__).resolve().parents[1] / "scripts" / "run_claude_production_e2e.py"),
@@ -759,7 +862,25 @@ def test_cli_accepts_only_the_installation_arguments(
 
     namespace["ProductionSensaiE2E"] = Runner
     main = cast(Callable[[list[str]], int], namespace["main"])
-    assert main(["--profile", str(tmp_path / "profile")]) == 0
+    assert (
+        main(
+            [
+                "--profile",
+                str(tmp_path / "profile"),
+                "--expected-public-readme-sha256",
+                "0" * 64,
+            ]
+        )
+        == 0
+    )
     assert capsys.readouterr().out == "PRODUCTION_E2E_PASS installation=connected=new_chat\n"
     with pytest.raises(SystemExit):
-        main(["--profile", str(tmp_path / "profile"), "--unrelated-option"])
+        main(
+            [
+                "--profile",
+                str(tmp_path / "profile"),
+                "--expected-public-readme-sha256",
+                "0" * 64,
+                "--unrelated-option",
+            ]
+        )
