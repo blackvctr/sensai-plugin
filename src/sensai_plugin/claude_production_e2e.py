@@ -57,17 +57,35 @@ _BROWSER_TOOL = Path("/mnt/c/gdrive/dev/.skills/use-windows-firefox/scripts/brow
 _SENSAI_PLUGIN_SELECTOR = "sensai@sensai"
 _SENSAI_MCP_NAME = "plugin:sensai:sensai"
 _SENSAI_MCP_URL = "https://black-vector.com/sensai/mcp"
-_KNOWN_PUBLIC_METADATA_INVENTORY_BASH = (
-    'echo "=== marketplace.json ==="; '
-    "curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
-    ".claude-plugin/marketplace.json; echo; "
-    'echo "=== plugin.json ==="; '
-    "curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
-    "plugins/sensai/.claude-plugin/plugin.json; echo; "
-    'echo "=== .mcp.json ==="; '
-    "curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
-    "plugins/sensai/.mcp.json"
+_PUBLIC_METADATA_INVENTORY_URLS = frozenset(
+    {
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        ".claude-plugin/marketplace.json",
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        "plugins/sensai/.claude-plugin/plugin.json",
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        "plugins/sensai/.mcp.json",
+    }
 )
+_SAFE_METADATA_CURL_FLAGS = frozenset(
+    {
+        "-s",
+        "-S",
+        "-L",
+        "-f",
+        "-fsSL",
+        "-fsS",
+        "-sSL",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--fail",
+    }
+)
+_INERT_ECHO = re.compile(
+    r'echo(?: (?:"[=A-Za-z0-9._:/ -]{1,128}"|[=A-Za-z0-9._:/][=A-Za-z0-9._:/-]{0,127}))?'
+)
+_UNSAFE_SHELL_GRAMMAR = frozenset("\n\r\t`$\\|&<>(){}[]*!?")
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
@@ -833,16 +851,69 @@ def _is_public_metadata_compound_bash(command: object) -> bool:
     return has_public_curl
 
 
-def _is_known_public_metadata_inventory_bash(command: object) -> bool:
-    """Match one previously observed read-only inventory byte for byte.
+def _is_safe_metadata_inventory_curl(part: str) -> str | None:
+    """Return one exact public metadata URL for a closed curl invocation."""
 
-    This is intentionally not shell parsing or command normalization.  The
-    acceptance may permit precisely this known public inventory once; a space,
-    reordered URL, added command, or any other spelling is another command and
-    remains denied.
+    try:
+        tokens = shlex.split(part, posix=True)
+    except ValueError:
+        return None
+    if len(tokens) < 2 or tokens[0] != "curl":
+        return None
+    options = tokens[1:-1]
+    if (
+        len(options) != len(set(options))
+        or any(option not in _SAFE_METADATA_CURL_FLAGS for option in options)
+    ):
+        return None
+    url = tokens[-1]
+    return url if url in _PUBLIC_METADATA_INVENTORY_URLS else None
+
+
+def _is_safe_public_metadata_inventory_bash(command: object) -> bool:
+    """Match one inert, read-only inventory of the three fixed public files.
+
+    The shell grammar is deliberately small: three distinct fixed ``curl``
+    reads; at most two inert ``echo`` labels before each read; semicolons only
+    as separators.  It rejects shell expansion, redirection, pipes, operators,
+    newlines, duplicate flags, duplicate URLs, and every other command.  This
+    permits harmless spelling changes without treating an arbitrary shell
+    script as a metadata read.
     """
 
-    return isinstance(command, str) and command == _KNOWN_PUBLIC_METADATA_INVENTORY_BASH
+    if (
+        not isinstance(command, str)
+        or not command
+        or len(command.encode("utf-8")) > MAX_TOOL_INPUT_BYTES
+        or any(character in command for character in _UNSAFE_SHELL_GRAMMAR)
+    ):
+        return False
+    parts = [part.strip() for part in command.split(";")]
+    if not parts or any(not part for part in parts):
+        return False
+
+    urls: list[str] = []
+    pending_echoes = 0
+    for part in parts:
+        if _INERT_ECHO.fullmatch(part):
+            # An echo after the final read would be an unnecessary fourth
+            # command position; keep the accepted language finite.
+            if len(urls) == len(_PUBLIC_METADATA_INVENTORY_URLS):
+                return False
+            pending_echoes += 1
+            if pending_echoes > 2:
+                return False
+            continue
+        url = _is_safe_metadata_inventory_curl(part)
+        if url is None or url in urls:
+            return False
+        urls.append(url)
+        pending_echoes = 0
+
+    return (
+        len(urls) == len(_PUBLIC_METADATA_INVENTORY_URLS)
+        and set(urls) == _PUBLIC_METADATA_INVENTORY_URLS
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -855,7 +926,7 @@ class InstallationPermission:
 
 
 class InstallationPermissionPolicy:
-    """Permit public reads, one observed inventory, and four installation effects."""
+    """Permit public reads, one safe inventory, and four installation effects."""
 
     def __init__(
         self,
@@ -866,7 +937,7 @@ class InstallationPermissionPolicy:
     ) -> None:
         self._first_comparison = first_comparison
         self._new_chat_uri = new_chat_uri
-        self._known_metadata_inventory_seen = False
+        self._metadata_inventory_seen = False
         self._install_action_seen = False
         if len(claude_linux_actions) != 4:
             raise ValueError("installation action manifest is invalid")
@@ -900,7 +971,7 @@ class InstallationPermissionPolicy:
         command = tool_input.get("command")
         if _is_direct_public_curl(command):
             return ToolKind.PUBLIC_METADATA_BASH
-        if _is_known_public_metadata_inventory_bash(command):
+        if _is_safe_public_metadata_inventory_bash(command):
             return ToolKind.PUBLIC_METADATA_INVENTORY_BASH
         if _is_public_metadata_compound_bash(command):
             return ToolKind.PUBLIC_METADATA_COMPOUND_BASH
@@ -928,11 +999,11 @@ class InstallationPermissionPolicy:
         if intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH:
             if (
                 self._first_comparison
-                or self._known_metadata_inventory_seen
+                or self._metadata_inventory_seen
                 or self._install_action_seen
             ):
                 return InstallationPermission(PermissionDecision.DENY, intent)
-            self._known_metadata_inventory_seen = True
+            self._metadata_inventory_seen = True
             return InstallationPermission(PermissionDecision.ALLOW, intent)
         if intent is ToolKind.PUBLIC_METADATA_COMPOUND_BASH:
             return InstallationPermission(PermissionDecision.DENY, intent)

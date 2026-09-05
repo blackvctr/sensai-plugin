@@ -18,7 +18,6 @@ import pytest
 
 from sensai_plugin.claude_e2e_profile import provision_profile
 from sensai_plugin.claude_production_e2e import (
-    _KNOWN_PUBLIC_METADATA_INVENTORY_BASH,
     INSTALLATION_SCENARIO,
     PUBLIC_INSTALL_PROMPT,
     PUBLIC_README_URL,
@@ -907,10 +906,37 @@ def test_compound_public_metadata_read_has_its_own_denied_category() -> None:
         ProductionSensaiE2E._require_installation(evidence)
 
 
-def test_known_metadata_inventory_is_allowed_once_before_installation_only() -> None:
+def _metadata_inventory_command(*, reverse: bool = False, flags: str = "-fsSL") -> str:
+    urls = [
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        ".claude-plugin/marketplace.json",
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        "plugins/sensai/.claude-plugin/plugin.json",
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        "plugins/sensai/.mcp.json",
+    ]
+    if reverse:
+        urls.reverse()
+    return "; ".join(
+        part
+        for index, url in enumerate(urls)
+        for part in (
+            f'echo "=== metadata {index + 1} ==="',
+            f"curl {flags} {url}",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("reverse", "flags"),
+    [(False, "-fsSL"), (True, "--silent --show-error --location --fail")],
+)
+def test_safe_metadata_inventory_is_allowed_once_before_installation_only(
+    reverse: bool, flags: str
+) -> None:
     actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
     policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
-    command = _KNOWN_PUBLIC_METADATA_INVENTORY_BASH
+    command = _metadata_inventory_command(reverse=reverse, flags=flags)
 
     first = policy.decide("Bash", {"command": command})
     second = policy.decide("Bash", {"command": command})
@@ -922,12 +948,12 @@ def test_known_metadata_inventory_is_allowed_once_before_installation_only() -> 
 
 
 @pytest.mark.parametrize("action", CLAUDE_LINUX_ACTIONS)
-def test_known_metadata_inventory_is_denied_after_any_install_action(
+def test_safe_metadata_inventory_is_denied_after_any_install_action(
     action: tuple[str, tuple[str, ...]],
 ) -> None:
     actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
     policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
-    command = _KNOWN_PUBLIC_METADATA_INVENTORY_BASH
+    command = _metadata_inventory_command()
 
     assert (
         policy.decide("Bash", {"command": shlex.join(action[1])}).decision
@@ -939,11 +965,25 @@ def test_known_metadata_inventory_is_denied_after_any_install_action(
     assert decision.intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
 
 
-@pytest.mark.parametrize("variation", [" ", "\n", "; true"])
-def test_known_metadata_inventory_rejects_every_byte_variation(variation: str) -> None:
+@pytest.mark.parametrize(
+    "variation",
+    [
+        "; true",
+        "; id",
+        " | id",
+        " > /tmp/metadata",
+        " && id",
+        "; echo $(id)",
+        "; echo `id`",
+        "\ntrue",
+        "; echo -n",
+        "; curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md",
+    ],
+)
+def test_safe_metadata_inventory_rejects_shell_syntax_and_extra_reads(variation: str) -> None:
     actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
     policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
-    command = _KNOWN_PUBLIC_METADATA_INVENTORY_BASH + variation
+    command = _metadata_inventory_command() + variation
 
     decision = policy.decide("Bash", {"command": command})
 
@@ -952,6 +992,38 @@ def test_known_metadata_inventory_rejects_every_byte_variation(variation: str) -
         ToolKind.PUBLIC_METADATA_COMPOUND_BASH,
         ToolKind.OTHER,
     }
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Repeating one fixed file leaves another unseen.
+        "curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        ".claude-plugin/marketplace.json; curl -fsSL "
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        ".claude-plugin/marketplace.json; curl -fsSL "
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.mcp.json",
+        # Duplicate curl flags are not part of the closed grammar.
+        _metadata_inventory_command(flags="-fsSL -fsSL"),
+        # More than two labels before a read is outside the finite grammar.
+        'echo "one"; echo "two"; echo "three"; '
+        "curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+        ".claude-plugin/marketplace.json; curl -fsSL "
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/"
+        ".claude-plugin/plugin.json; curl -fsSL "
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.mcp.json",
+        # Echoes are labels only; a final command after the third read is forbidden.
+        _metadata_inventory_command() + "; echo done",
+    ],
+)
+def test_safe_metadata_inventory_rejects_duplicates_and_non_inert_shape(command: str) -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
+
+    decision = policy.decide("Bash", {"command": command})
+
+    assert decision.decision is PermissionDecision.DENY
+    assert decision.intent is not ToolKind.PUBLIC_METADATA_INVENTORY_BASH
 
 
 def test_first_comparison_allows_only_the_public_readme_fetch() -> None:
@@ -980,14 +1052,14 @@ def test_first_comparison_allows_only_the_public_readme_fetch() -> None:
     assert other.intent is ToolKind.OTHER
 
 
-def test_first_comparison_denies_known_metadata_inventory() -> None:
+def test_first_comparison_denies_safe_metadata_inventory() -> None:
     actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
     policy = InstallationPermissionPolicy(
         new_chat_uri=actions[-1][1],
         claude_linux_actions=actions,
         first_comparison=True,
     )
-    command = _KNOWN_PUBLIC_METADATA_INVENTORY_BASH
+    command = _metadata_inventory_command()
 
     decision = policy.decide("Bash", {"command": command})
 
