@@ -2005,10 +2005,11 @@ class ProductionSensaiE2E:
             raise ProductionE2EError("installation_terminal_result_missing")
         if not evidence.session_verified:
             raise ProductionE2EError("installation_session_not_verified")
-        # The published flow has one short localized explanation before the
-        # normal Google sign-in and one localized completion message after the
-        # prepared /sensai:sensai new-chat attempt.
-        if len(evidence.text_messages) != 2:
+        # The public README requires localized prose, but does not prescribe
+        # its exact Russian wording or a fixed number of sentences before
+        # sign-in.  It does require an explanation before the normal Google
+        # sign-in and one completion message after the prepared new chat.
+        if not evidence.text_messages:
             raise ProductionE2EError("installation_visible_message_count_invalid")
         if any(item.cyrillic_letters <= item.latin_letters for item in evidence.text_messages):
             raise ProductionE2EError("installation_visible_message_not_russian")
@@ -2031,12 +2032,22 @@ class ProductionSensaiE2E:
             raise ProductionE2EError("public_sensai_plugin_not_verified")
         if ToolKind.FORBIDDEN_BROWSER_MODE in evidence.tool_calls:
             raise ProductionE2EError("installation_no_browser_forbidden")
-        if evidence.event_order != (
+        expected_actions = (
             ToolKind.MARKETPLACE_ADD.value,
             ToolKind.PLUGIN_INSTALL.value,
-            "visible",
             ToolKind.LOGIN.value,
             ToolKind.NEW_CHAT_URI.value,
-            "visible",
+        )
+        if tuple(item for item in evidence.event_order if item != "visible") != expected_actions:
+            raise ProductionE2EError("installation_event_order_invalid")
+        if len(evidence.text_messages) != evidence.event_order.count("visible"):
+            raise ProductionE2EError("installation_visible_message_count_invalid")
+        login_index = evidence.event_order.index(ToolKind.LOGIN.value)
+        new_chat_index = evidence.event_order.index(ToolKind.NEW_CHAT_URI.value)
+        if (
+            evidence.event_order[:2]
+            != (ToolKind.MARKETPLACE_ADD.value, ToolKind.PLUGIN_INSTALL.value)
+            or "visible" not in evidence.event_order[2:login_index]
+            or evidence.event_order[new_chat_index + 1 :] != ("visible",)
         ):
             raise ProductionE2EError("installation_event_order_invalid")

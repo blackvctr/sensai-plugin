@@ -311,6 +311,43 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     assert not list((profile / "runs").iterdir())
 
 
+def test_installation_accepts_localized_pre_login_prose_without_exact_wording() -> None:
+    evidence = replace(
+        _successful_driver().evidence,
+        text_messages=(_text(), _text(), _text()),
+        event_order=(
+            ToolKind.MARKETPLACE_ADD.value,
+            ToolKind.PLUGIN_INSTALL.value,
+            "visible",
+            "visible",
+            ToolKind.LOGIN.value,
+            ToolKind.NEW_CHAT_URI.value,
+            "visible",
+        ),
+    )
+
+    ProductionSensaiE2E._require_installation(evidence)
+
+
+def test_installation_requires_one_completion_message_after_the_prepared_new_chat() -> None:
+    evidence = replace(
+        _successful_driver().evidence,
+        event_order=(
+            ToolKind.MARKETPLACE_ADD.value,
+            ToolKind.PLUGIN_INSTALL.value,
+            "visible",
+            ToolKind.LOGIN.value,
+            ToolKind.NEW_CHAT_URI.value,
+            "visible",
+            "visible",
+        ),
+        text_messages=(_text(), _text(), _text()),
+    )
+
+    with pytest.raises(ProductionE2EError, match="installation_event_order_invalid"):
+        ProductionSensaiE2E._require_installation(evidence)
+
+
 def test_published_august_contract_opens_the_plugin_command_not_a_consultation_prompt() -> None:
     assert CLAUDE_NEW_CHAT_REQUEST == "/sensai:sensai"
     assert CLAUDE_NEW_CHAT_URI == "claude://code/new?q=%2Fsensai%3Asensai"
