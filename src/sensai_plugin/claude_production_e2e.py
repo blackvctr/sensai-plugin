@@ -34,9 +34,6 @@ from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_LINUX_ACTIONS,
     CLAUDE_SONNET_5_MODEL,
-    README_PATH,
-    PublicReadmeContract,
-    _public_contract_from_markdown,
 )
 
 INSTALL_TIMEOUT_SECONDS = 300
@@ -63,8 +60,7 @@ _PUBLIC_METADATA_INVENTORY_URLS = frozenset(
         ".claude-plugin/marketplace.json",
         "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
         "plugins/sensai/.claude-plugin/plugin.json",
-        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
-        "plugins/sensai/.mcp.json",
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.mcp.json",
     }
 )
 _SAFE_METADATA_CURL_FLAGS = frozenset(
@@ -163,37 +159,6 @@ def fetch_public_readme_sha256(expected_sha256: str) -> str:
     if not hmac.compare_digest(actual, expected):
         raise ProductionE2EError("public_readme_sha256_mismatch")
     return actual
-
-
-def load_local_installation_contract() -> PublicReadmeContract:
-    """Load local acceptance boundaries, never instructions for Claude."""
-
-    try:
-        return _public_contract_from_markdown(README_PATH.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
-        raise ProductionE2EError("local_installation_contract_invalid") from error
-
-
-def fetch_public_readme_contract() -> PublicReadmeContract:
-    """Legacy v2 helper kept for existing transcript-only tests.
-
-    Production execution uses :func:`fetch_public_readme_sha256` instead.
-    """
-
-    request = Request(PUBLIC_README_URL, headers={"Accept": "text/plain"})
-    try:
-        with urlopen(request, timeout=20) as response:
-            if response.geturl() != PUBLIC_README_URL:
-                raise ProductionE2EError("public_readme_redirected")
-            body = response.read(MAX_PUBLIC_README_BYTES + 1)
-    except OSError as error:
-        raise ProductionE2EError("public_readme_unavailable") from error
-    if len(body) > MAX_PUBLIC_README_BYTES:
-        raise ProductionE2EError("public_readme_too_large")
-    try:
-        return _public_contract_from_markdown(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
-        raise ProductionE2EError("public_readme_invalid") from error
 
 
 def resolve_installed_wsl_claude() -> str:
@@ -861,9 +826,8 @@ def _is_safe_metadata_inventory_curl(part: str) -> str | None:
     if len(tokens) < 2 or tokens[0] != "curl":
         return None
     options = tokens[1:-1]
-    if (
-        len(options) != len(set(options))
-        or any(option not in _SAFE_METADATA_CURL_FLAGS for option in options)
+    if len(options) != len(set(options)) or any(
+        option not in _SAFE_METADATA_CURL_FLAGS for option in options
     ):
         return None
     url = tokens[-1]
@@ -997,11 +961,7 @@ class InstallationPermissionPolicy:
                 return InstallationPermission(PermissionDecision.DENY, intent)
             return InstallationPermission(PermissionDecision.ALLOW, intent)
         if intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH:
-            if (
-                self._first_comparison
-                or self._metadata_inventory_seen
-                or self._install_action_seen
-            ):
+            if self._first_comparison or self._metadata_inventory_seen or self._install_action_seen:
                 return InstallationPermission(PermissionDecision.DENY, intent)
             self._metadata_inventory_seen = True
             return InstallationPermission(PermissionDecision.ALLOW, intent)
@@ -1718,6 +1678,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         disconnected = False
         child_absent = False
         try:
+
             async def receive() -> None:
                 nonlocal first_text_kind, result_seen, session_verified, terminal_error
                 nonlocal sdk_result_kind, sdk_result_cause
@@ -2005,9 +1966,7 @@ class ProductionSensaiE2E:
         except ProductionE2EError as error:
             receipt = _pre_marketplace_failure_receipt(installation)
             if receipt is not None:
-                raise ProductionE2EError(
-                    str(error), before_marketplace_receipt=receipt
-                ) from error
+                raise ProductionE2EError(str(error), before_marketplace_receipt=receipt) from error
             raise
         return ProductionE2EReport(True, True, True, True, True, True)
 

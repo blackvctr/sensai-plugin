@@ -54,14 +54,9 @@ from sensai_plugin.claude_production_e2e import (
     _is_exact_public_sensai_mcp_status,
     _pre_marketplace_failure_receipt,
     _sdk_result_cause,
-    fetch_public_readme_contract,
     fetch_public_readme_sha256,
 )
-from sensai_plugin.installation_e2e_contract import (
-    CLAUDE_LINUX_ACTIONS,
-    PublicReadmeContract,
-    _public_contract_from_markdown,
-)
+from sensai_plugin.installation_e2e_contract import CLAUDE_LINUX_ACTIONS
 
 
 @pytest.fixture(autouse=True)
@@ -88,12 +83,6 @@ def _profile() -> Path:
     return provision_profile(
         Path.home() / ".local" / "share" / "sensai-e2e", credentials, account
     ).root
-
-
-def _contract() -> PublicReadmeContract:
-    return _public_contract_from_markdown(
-        (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
-    )
 
 
 def _text(*, expected: bool = True) -> TextEvidence:
@@ -323,18 +312,6 @@ def test_installation_prompt_is_fixed_test_input_not_a_readme_value() -> None:
 
     assert runner.run().complete
     assert driver.calls[1].command[-1] == INSTALLATION_SCENARIO.prompt
-
-
-def test_full_runner_never_invokes_legacy_readme_contract_parser(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import sensai_plugin.claude_production_e2e as module
-
-    def parser_must_not_run() -> PublicReadmeContract:
-        raise AssertionError("the legacy README parser must not run in the full E2E")
-
-    monkeypatch.setattr(module, "load_local_installation_contract", parser_must_not_run)
-    assert _runner(_profile(), _successful_driver()).run().complete
 
 
 def test_first_comparison_keeps_only_redacted_first_reply_and_tool_categories() -> None:
@@ -764,9 +741,7 @@ def test_installation_rejects_terminal_or_code_block_visible_message() -> None:
             ),
         ),
     )
-    with pytest.raises(
-        ProductionE2EError, match="installation_visible_message_mentions_terminal"
-    ):
+    with pytest.raises(ProductionE2EError, match="installation_visible_message_mentions_terminal"):
         _runner(profile, _Driver(terminal)).run()
 
 
@@ -887,7 +862,9 @@ def test_compound_public_metadata_read_has_its_own_denied_category() -> None:
     actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
     policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
     first = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/.claude-plugin/marketplace.json"
-    second = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.mcp.json"
+    second = (
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.mcp.json"
+    )
     command = f'echo "=== first ==="; curl -fsSL {first}; echo; curl -fsSL {second}'
 
     decision = policy.decide("Bash", {"command": command})
@@ -912,8 +889,7 @@ def _metadata_inventory_command(*, reverse: bool = False, flags: str = "-fsSL") 
         ".claude-plugin/marketplace.json",
         "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
         "plugins/sensai/.claude-plugin/plugin.json",
-        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
-        "plugins/sensai/.mcp.json",
+        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.mcp.json",
     ]
     if reverse:
         urls.reverse()
@@ -1436,16 +1412,12 @@ def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:
 
 
 def test_mcp_status_requires_one_exact_sensai_url() -> None:
-    status = (
-        "plugin:sensai:sensai:\n"
-        "Type: http\n"
-        "URL: https://black-vector.com/sensai/mcp\n"
-    )
+    status = "plugin:sensai:sensai:\nType: http\nURL: https://black-vector.com/sensai/mcp\n"
     assert _is_exact_public_sensai_mcp_status(status)
+    assert not _is_exact_public_sensai_mcp_status(status.replace("/mcp", "/mcp/other"))
     assert not _is_exact_public_sensai_mcp_status(
-        status.replace("/mcp", "/mcp/other")
+        status + "URL: https://black-vector.com/sensai/mcp\n"
     )
-    assert not _is_exact_public_sensai_mcp_status(status + "URL: https://black-vector.com/sensai/mcp\n")
 
 
 class _Response:
@@ -1464,19 +1436,6 @@ class _Response:
 
     def read(self, _size: int) -> bytes:
         return self.body
-
-
-def test_public_readme_fetch_accepts_only_exact_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sensai_plugin.claude_production_e2e as module
-
-    body = (Path(__file__).resolve().parents[1] / "README.md").read_bytes()
-    monkeypatch.setattr(
-        module, "urlopen", lambda request, timeout: _Response(body, request.full_url)
-    )
-    assert fetch_public_readme_contract().russian_install_prompt.startswith("Установи Sensai ")
-    monkeypatch.setattr(module, "urlopen", lambda _request, timeout: _Response(body, "https://bad"))
-    with pytest.raises(ProductionE2EError, match="public_readme_redirected"):
-        fetch_public_readme_contract()
 
 
 def test_public_readme_sha256_matches_bytes_without_parsing_a_manifest(

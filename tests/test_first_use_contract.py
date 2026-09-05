@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from sensai_plugin.claude_first_reply import _SCENARIO_PROMPTS, FirstReplyScenario
-from sensai_plugin.installation_e2e_contract import _public_contract_from_markdown
-from sensai_plugin.package_builder import BuiltPackages, build_packages as _build_packages, plugin_version
+from sensai_plugin.package_builder import BuiltPackages, plugin_version
+from sensai_plugin.package_builder import build_packages as _build_packages
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SKILL = REPOSITORY_ROOT / "payload-src/shared/skills/sensai/SKILL.md"
@@ -23,46 +23,28 @@ def test_public_payload_is_built_from_the_single_skill_source() -> None:
     assert PACKAGED_SKILL.read_bytes() == SOURCE_SKILL.read_bytes()
 
 
-def test_public_readme_uses_a_concise_strict_installation_manifest() -> None:
+def test_public_readme_is_human_installation_guidance_not_a_test_manifest() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-    contract = _public_contract_from_markdown(readme)
 
-    assert "## Installation manifest" in readme
-    assert '"schema": "sensai-install-v2"' in readme
-    assert "Installation after explicit request (AI agent part)" not in readme
-    assert "#### Known problems" not in readme
-    assert "curl -fsSL" not in readme
-    assert "sandbox-disabling" not in readme
-    assert "elevated execution" not in readme
-    assert contract.russian_authorization_message.startswith("Я сам установлю Sensai.")
-    assert contract.russian_ready_message.startswith("Sensai установлен.")
+    assert "## Installation after explicit request (AI agent part)" in readme
+    assert "#### Known problems" in readme
+    assert "## Installation manifest" not in readme
+    assert '"schema": "sensai-install-v2"' not in readme
+    assert "```json" not in readme
 
 
-def test_public_copy_paste_prompts_and_manifest_request_remain_exact() -> None:
+def test_public_copy_paste_prompts_and_fixed_e2e_input_remain_exact() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-    contract = _public_contract_from_markdown(readme)
-    russian_prompt = "Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
-    english_prompt = "Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
+    russian_prompt = (
+        "Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
+    )
+    english_prompt = (
+        "Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
+    )
 
     assert f"```text\n{russian_prompt}\n```" in readme
-    assert f"```text\n{english_prompt}\n```" in readme
+    assert f"```\n{english_prompt}\n```" in readme
     assert _SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP] == russian_prompt
-    assert contract.russian_new_chat_request.startswith("Проконсультируйся с Sensai.")
-
-
-def test_manifest_keeps_only_typed_local_installation_values() -> None:
-    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-
-    for value in (
-        '"id": "marketplace_add"',
-        '"tool": "Bash"',
-        '"argv": ["claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]',
-        '"argv": ["claude", "plugin", "install", "sensai@sensai", "--scope", "user"]',
-        '"argv": ["script", "-q", "-c", "claude mcp login plugin:sensai:sensai", "/dev/null"]',
-        '"argv": ["codex", "mcp", "login", "sensai"]',
-    ):
-        assert value in readme
-    assert '"command"' not in readme
 
 
 def test_sensai_skill_description_covers_a_person_starting_consultation() -> None:
