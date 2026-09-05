@@ -24,6 +24,7 @@ from sensai_plugin.claude_production_e2e import (
     TextEvidence,
     ToolKind,
     ToolResultEvidence,
+    _agent_command,
     _assert_normal_browser_path,
     _classify_bash_command,
     _consume_stream,
@@ -254,6 +255,31 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     assert not list((profile / "runs").iterdir())
 
 
+def test_agent_command_exposes_only_exact_e2e_webfetch_and_installation_actions() -> None:
+    new_chat_uri = "claude://code/new?q=exact-request"
+    command = _agent_command(
+        "claude",
+        prompt="Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md",
+        session=uuid.uuid4(),
+        new_chat_uri=new_chat_uri,
+    )
+
+    allowed = command[command.index("--allowed-tools") + 1].split(",")
+    assert allowed == [
+        "WebFetch(domain:raw.githubusercontent.com)",
+        "Bash(claude plugin marketplace add blackvctr/sensai-plugin)",
+        "Bash(claude plugin install sensai@sensai --scope user)",
+        'Bash(script -q -c "claude mcp login plugin:sensai:sensai" /dev/null)',
+        f"Bash(xdg-open '{new_chat_uri}')",
+    ]
+    assert command[command.index("--tools") + 1] == "WebFetch,Bash"
+    assert command[command.index("--permission-prompts") + 1] == "none"
+    for flag in ("--restricted", "--no-chrome", "--no-session-persistence", "--strict-mcp-config"):
+        assert flag in command
+    assert all("*" not in value for value in allowed)
+    assert "Bash" not in allowed
+
+
 def test_installation_rejects_nonexact_visible_message() -> None:
     profile = _profile()
     evidence = _evidence(
@@ -324,6 +350,7 @@ def test_bash_classifier_requires_real_installation_command_semantics() -> None:
         is ToolKind.PLUGIN_INSTALL
     )
     assert _classify_bash_command(f"xdg-open {uri!r}", uri) is ToolKind.NEW_CHAT_URI
+    assert _classify_bash_command(f"xdg-open {uri}", uri) is ToolKind.OTHER
 
 
 def test_parser_handles_empty_initial_tool_input_and_partial_json() -> None:

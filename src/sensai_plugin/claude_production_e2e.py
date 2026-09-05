@@ -43,6 +43,7 @@ MAX_STREAM_BYTES = 2 * 1024 * 1024
 MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
+_E2E_WEBFETCH_PERMISSION = "WebFetch(domain:raw.githubusercontent.com)"
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
@@ -322,12 +323,7 @@ def _classify_bash_command(command: str, expected_new_chat_uri: str | None) -> T
         return ToolKind.OTHER
     if "--no-browser" in tokens:
         return ToolKind.FORBIDDEN_BROWSER_MODE
-    if (
-        expected_new_chat_uri is not None
-        and len(tokens) == 2
-        and tokens[0] in {"xdg-open", "open"}
-        and tokens[1] == expected_new_chat_uri
-    ):
+    if expected_new_chat_uri is not None and command == _new_chat_bash_command(expected_new_chat_uri):
         return ToolKind.NEW_CHAT_URI
     if tokens and tokens[0] == "script" and "-c" in tokens:
         position = tokens.index("-c") + 1
@@ -773,7 +769,24 @@ def _is_exact_public_sensai_inventory(entries: object) -> bool:
     )
 
 
-def _agent_command(executable: str, *, prompt: str, session: uuid.UUID) -> tuple[str, ...]:
+def _e2e_allowed_tools(new_chat_uri: str) -> tuple[str, ...]:
+    return (
+        _E2E_WEBFETCH_PERMISSION,
+        "Bash(claude plugin marketplace add blackvctr/sensai-plugin)",
+        "Bash(claude plugin install sensai@sensai --scope user)",
+        'Bash(script -q -c "claude mcp login plugin:sensai:sensai" /dev/null)',
+        f"Bash({_new_chat_bash_command(new_chat_uri)})",
+    )
+
+
+def _new_chat_bash_command(new_chat_uri: str) -> str:
+    return f"xdg-open {shlex.quote(new_chat_uri)}"
+
+
+def _agent_command(
+    executable: str, *, prompt: str, session: uuid.UUID, new_chat_uri: str
+) -> tuple[str, ...]:
+    allowed_tools = _e2e_allowed_tools(new_chat_uri)
     command = (
         executable,
         "-p",
@@ -783,6 +796,16 @@ def _agent_command(executable: str, *, prompt: str, session: uuid.UUID) -> tuple
         "stream-json",
         "--verbose",
         "--include-partial-messages",
+        "--restricted",
+        "--tools",
+        "WebFetch,Bash",
+        "--allowed-tools",
+        ",".join(allowed_tools),
+        "--permission-prompts",
+        "none",
+        "--no-chrome",
+        "--no-session-persistence",
+        "--strict-mcp-config",
         "--session-id",
         str(session),
         prompt,
@@ -837,7 +860,12 @@ class ProductionSensaiE2E:
             raise ProductionE2EError("isolated_claude_auth_not_verified")
         new_chat_uri = "claude://code/new?" + urlencode({"q": contract.russian_new_chat_request})
         installation = self._driver.run_agent(
-            _agent_command(executable, prompt=contract.russian_install_prompt, session=session),
+            _agent_command(
+                executable,
+                prompt=contract.russian_install_prompt,
+                session=session,
+                new_chat_uri=new_chat_uri,
+            ),
             cwd=run.work,
             environment=run.environment,
             timeout_seconds=INSTALL_TIMEOUT_SECONDS,

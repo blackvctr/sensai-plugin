@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from urllib.parse import urlencode
 
+import pytest
+
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_SONNET_5_MODEL,
     README_PATH,
@@ -49,6 +51,31 @@ def test_reads_the_current_public_russian_prompt_and_new_chat_request() -> None:
     assert contract.russian_new_chat_request.startswith(
         "Проконсультируйся с Sensai."  # noqa: RUF001 - exact public Russian request
     )
+
+
+def test_rejects_unknown_duplicate_or_mismatched_install_manifest_data() -> None:
+    markdown = README_PATH.read_text(encoding="utf-8")
+    altered_documents = (
+        markdown.replace(
+            '"schema": "sensai-install-v1",',
+            '"schema": "sensai-install-v1",\n  "unexpected": true,',
+            1,
+        ),
+        markdown.replace(
+            '"schema": "sensai-install-v1",',
+            '"schema": "sensai-install-v1",\n  "schema": "sensai-install-v1",',
+            1,
+        ),
+        markdown.replace(
+            "claude plugin install sensai@sensai --scope user",
+            "claude plugin install another-plugin --scope user",
+            1,
+        ),
+    )
+
+    for altered in altered_documents:
+        with pytest.raises(ValueError):
+            _public_contract_from_markdown(altered)
 
 
 def test_ignores_an_unrelated_russian_prompt_before_the_human_installation_section() -> None:

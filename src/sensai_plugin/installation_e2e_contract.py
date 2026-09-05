@@ -9,6 +9,7 @@ contacts Sensai.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from unicodedata import category, name
@@ -226,47 +227,104 @@ def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
     ):
         raise ValueError("README Russian installation prompt must be exactly one nonempty line")
 
-    agent_installation = _markdown_section(
-        lines,
-        "## Installation after explicit request (AI agent part)",
-    )
-    claude_desktop = _markdown_subsection(agent_installation, "### Claude Desktop")
-    russian_link = next(
-        (line for line in claude_desktop if line.startswith("- Russian: [")),
-        None,
-    )
-    if russian_link is None:
-        raise ValueError("README has no Russian Claude new-chat link")
-    link_body = russian_link.removeprefix("- Russian: [")
-    visible_request, separator, uri_tail = link_body.partition("](")
-    if not separator or not uri_tail.endswith(")"):
-        raise ValueError("README Russian Claude new-chat link is malformed")
-    uri_request = _new_chat_request(uri_tail[:-1])
-    if uri_request is None or visible_request != uri_request:
-        raise ValueError("README Russian Claude new-chat link does not encode its visible request")
+    manifest = _installation_manifest(lines)
+    hosts = _manifest_object(manifest.get("hosts"), {"claude_desktop", "chatgpt_desktop"}, "hosts")
+    claude = _manifest_object(hosts["claude_desktop"], {"russian"}, "claude_desktop")
+    russian = _manifest_object(claude["russian"], {"visible_messages", "steps"}, "claude_desktop.russian")
+    messages = _manifest_list(russian["visible_messages"], 2, "visible_messages")
+    phases = ("before_google_sign_in", "after_new_chat_attempt")
+    visible_messages: list[str] = []
+    for item, phase in zip(messages, phases, strict=True):
+        message = _manifest_object(item, {"phase", "text"}, "visible_message")
+        if message["phase"] != phase or not isinstance(message["text"], str) or not message["text"]:
+            raise ValueError("README visible message manifest is invalid")
+        visible_messages.append(message["text"])
 
-    canonical_messages = _markdown_subsubsection(
-        claude_desktop,
-        "#### Exact Russian messages for a successful Claude installation",
-    )
-    authorization_message = _marked_text_block(
-        canonical_messages,
-        "**First visible message — before any action and Google sign-in:**",
-    )
-    ready_message = _marked_text_block(
-        canonical_messages,
+    claude_steps = _manifest_steps(
+        russian["steps"],
         (
-            "**Second visible message — after Sensai is connected and after "
-            "attempting to open the new-chat link above:**"
+            ("marketplace_add", "claude plugin marketplace add blackvctr/sensai-plugin"),
+            ("plugin_install", "claude plugin install sensai@sensai --scope user"),
+            ("sensai_login", 'script -q -c "claude mcp login plugin:sensai:sensai" /dev/null'),
         ),
+        "claude_desktop.russian.steps",
+        extra_steps=1,
+    )
+    new_chat = _manifest_object(claude_steps[-1], {"kind", "request", "uri"}, "new_chat_uri")
+    if new_chat["kind"] != "new_chat_uri" or not isinstance(new_chat["request"], str) or not isinstance(new_chat["uri"], str):
+        raise ValueError("README new-chat manifest is invalid")
+    uri_request = _new_chat_request(new_chat["uri"])
+    if uri_request is None or uri_request != new_chat["request"]:
+        raise ValueError("README new-chat manifest URI does not match its request")
+
+    chatgpt = _manifest_object(hosts["chatgpt_desktop"], {"steps"}, "chatgpt_desktop")
+    _manifest_steps(
+        chatgpt["steps"],
+        (
+            ("marketplace_add", "codex plugin marketplace add blackvctr/sensai-plugin"),
+            ("plugin_install", "codex plugin add sensai@sensai"),
+            ("sensai_login", "codex mcp login sensai"),
+        ),
+        "chatgpt_desktop.steps",
     )
 
     return PublicReadmeContract(
         russian_install_prompt=prompt_lines[0],
-        russian_authorization_message=authorization_message,
+        russian_authorization_message=visible_messages[0],
         russian_new_chat_request=uri_request,
-        russian_ready_message=ready_message,
+        russian_ready_message=visible_messages[1],
     )
+
+
+def _installation_manifest(lines: list[str]) -> dict[str, object]:
+    section = _markdown_section(lines, "## Installation manifest")
+    fence_indexes = [index for index, line in enumerate(section) if line == "```json"]
+    if len(fence_indexes) != 1:
+        raise ValueError("README installation manifest must contain exactly one JSON block")
+    start = fence_indexes[0] + 1
+    end = next((index for index in range(start, len(section)) if section[index] == "```"), None)
+    if end is None or any(line == "```json" for line in section[start:end]):
+        raise ValueError("README installation manifest JSON block is malformed")
+    try:
+        value = json.loads("\n".join(section[start:end]), object_pairs_hook=_strict_json_object)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("README installation manifest is not valid strict JSON") from error
+    manifest = _manifest_object(value, {"schema", "hosts"}, "manifest")
+    if manifest["schema"] != "sensai-install-v1":
+        raise ValueError("README installation manifest schema is invalid")
+    return manifest
+
+
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _manifest_object(value: object, expected_keys: set[str], location: str) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise ValueError(f"README manifest object is invalid: {location}")
+    return value
+
+
+def _manifest_list(value: object, length: int, location: str) -> list[object]:
+    if not isinstance(value, list) or len(value) != length:
+        raise ValueError(f"README manifest list is invalid: {location}")
+    return value
+
+
+def _manifest_steps(
+    value: object, expected: tuple[tuple[str, str], ...], location: str, *, extra_steps: int = 0
+) -> list[object]:
+    steps = _manifest_list(value, len(expected) + extra_steps, location)
+    for item, (kind, command) in zip(steps[: len(expected)], expected, strict=True):
+        step = _manifest_object(item, {"kind", "command"}, location)
+        if step["kind"] != kind or step["command"] != command:
+            raise ValueError(f"README manifest step is invalid: {location}")
+    return steps
 
 
 def _markdown_section(lines: list[str], heading: str) -> list[str]:
