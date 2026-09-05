@@ -2,7 +2,7 @@
 
 ## User journey
 
-The person gives Codex or Claude Code one natural request containing only the public GitHub repository. The agent reads the repository README, identifies its platform, and installs Sensai through that platform's native marketplace and plugin commands. No bootstrap script, invitation URL, one-time code, or manually stored bearer token is part of installation.
+The person gives Codex or Claude Code one natural request containing only the public GitHub repository. The agent reads the neutral README, identifies the product, and installs Sensai through that platform's native marketplace and plugin commands. The public README does not contain executable installation commands. No bootstrap script, invitation URL, one-time code, or manually stored bearer token is part of installation.
 
 ## Contract
 

@@ -5,7 +5,7 @@ import os
 import runpy
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -31,8 +31,8 @@ from sensai_plugin.claude_production_e2e import (
     _is_exact_public_sensai_inventory,
     fetch_public_readme_contract,
 )
+from sensai_plugin.controlled_installation_policy import CONTROLLED_NEW_CHAT_URI
 from sensai_plugin.installation_e2e_contract import (
-    CLAUDE_LINUX_ACTIONS,
     PublicReadmeContract,
     _public_contract_from_markdown,
 )
@@ -70,8 +70,19 @@ def _contract() -> PublicReadmeContract:
     )
 
 
-def _text(*, expected: bool = True) -> TextEvidence:
-    return TextEvidence(expected, cyrillic_letters=12, latin_letters=2)
+def _text(
+    *,
+    non_whitespace_characters: int = 12,
+    cyrillic_letters: int = 12,
+    latin_letters: int = 2,
+    contains_markdown_code: bool = False,
+) -> TextEvidence:
+    return TextEvidence(
+        non_whitespace_characters,
+        cyrillic_letters,
+        latin_letters,
+        contains_markdown_code,
+    )
 
 
 def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEvidence:
@@ -88,7 +99,27 @@ def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEv
         successful_tool_results=tools,
         tool_results=tuple(ToolResultEvidence(tool, True) for tool in tools),
         event_order=(
-            ("visible", *(tool.value for tool in tools), "visible")
+            (
+                "visible",
+                *(
+                    item
+                    for tool in tools
+                    for item in (
+                        tool.value,
+                        *(
+                            (f"{tool.value}:success",)
+                            if tool
+                            in {
+                                ToolKind.MARKETPLACE_ADD,
+                                ToolKind.PLUGIN_INSTALL,
+                                ToolKind.LOGIN,
+                            }
+                            else ()
+                        ),
+                    )
+                ),
+                "visible",
+            )
             if texts
             else tuple(tool.value for tool in tools)
         ),
@@ -132,7 +163,6 @@ class _Driver(ClaudeDriver):
         cwd: Path,
         environment: dict[str, str],
         timeout_seconds: int,
-        expected_visible_messages: Sequence[str],
         expected_session: uuid.UUID,
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence:
@@ -225,7 +255,6 @@ def _parse(records: list[dict[str, object]], *, returncode: int = 0) -> AgentEvi
     return _consume_stream(
         _StreamProcess(payload, returncode=returncode),  # type: ignore[arg-type]
         timeout_seconds=1,
-        expected_visible_messages=(),
         expected_session=session,
         expected_new_chat_uri=None,
     )
@@ -235,7 +264,6 @@ def _parse_raw(payload: bytes) -> AgentEvidence:
     return _consume_stream(
         _StreamProcess(payload),  # type: ignore[arg-type]
         timeout_seconds=1,
-        expected_visible_messages=(),
         expected_session=uuid.uuid4(),
         expected_new_chat_uri=None,
     )
@@ -253,7 +281,7 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     assert installation.command[-1].startswith("Установи Sensai ")
     assert installation.command[installation.command.index("--model") + 1] == "claude-sonnet-5"
     assert "--no-browser" not in installation.command
-    assert installation.expected_new_chat_uri == _contract().russian_new_chat_uri
+    assert installation.expected_new_chat_uri == CONTROLLED_NEW_CHAT_URI
     assert connection.command == ("claude", "mcp", "get", "plugin:sensai:sensai")
     assert plugin.command == ("claude", "plugin", "list", "--json")
     assert all(call.cwd.name == "work" for call in driver.calls)
@@ -265,7 +293,6 @@ def test_agent_command_exposes_only_exact_e2e_webfetch_and_installation_actions(
         "claude",
         prompt="Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md",
         session=uuid.uuid4(),
-        claude_linux_actions=tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS),
     )
 
     allowed = command[command.index("--allowed-tools") + 1].split(",")
@@ -274,7 +301,7 @@ def test_agent_command_exposes_only_exact_e2e_webfetch_and_installation_actions(
         "Bash(claude plugin marketplace add blackvctr/sensai-plugin)",
         "Bash(claude plugin install sensai@sensai --scope user)",
         "Bash(script -q -c 'claude mcp login plugin:sensai:sensai' /dev/null)",
-        f"Bash(xdg-open '{CLAUDE_LINUX_ACTIONS[-1][1][1]}')",
+        "Bash(xdg-open 'claude://code/new?q=%D0%9F%D1%80%D0%BE%D0%BA%D0%BE%D0%BD%D1%81%D1%83%D0%BB%D1%8C%D1%82%D0%B8%D1%80%D1%83%D0%B9%D1%81%D1%8F%20%D1%81%20Sensai.%20%D0%A1%D0%BD%D0%B0%D1%87%D0%B0%D0%BB%D0%B0%20%D0%B7%D0%B0%D0%B4%D0%B0%D0%B9%20%D0%BC%D0%BD%D0%B5%20%D0%B2%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D1%8B%20%D0%BE%20%D0%BC%D0%BE%D0%B5%D0%B9%20%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B5%2C%20%D0%BE%D0%B1%D1%8B%D1%87%D0%BD%D1%8B%D1%85%20%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B0%D1%85%20%D0%B8%20%D0%BF%D0%BE%D0%B2%D1%82%D0%BE%D1%80%D1%8F%D1%8E%D1%89%D0%B8%D1%85%D1%81%D1%8F%20%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%D1%85.')",
     ]
     assert command[command.index("--tools") + 1] == "WebFetch,Bash"
     assert command[command.index("--permission-prompts") + 1] == "none"
@@ -284,17 +311,77 @@ def test_agent_command_exposes_only_exact_e2e_webfetch_and_installation_actions(
     assert "Bash" not in allowed
 
 
-def test_installation_rejects_nonexact_visible_message() -> None:
+def test_installation_rejects_nonrussian_visible_message() -> None:
     profile = _profile()
     evidence = _evidence(
         ToolKind.MARKETPLACE_ADD,
         ToolKind.PLUGIN_INSTALL,
         ToolKind.LOGIN,
         ToolKind.NEW_CHAT_URI,
-        texts=(_text(), _text(expected=False)),
+        texts=(
+            _text(),
+            _text(cyrillic_letters=0, latin_letters=12),
+        ),
     )
-    with pytest.raises(ProductionE2EError, match="installation_messages_not_exact"):
+    with pytest.raises(ProductionE2EError, match="installation_visible_message_not_russian"):
         _runner(profile, _Driver(evidence)).run()
+
+
+@pytest.mark.parametrize(
+    ("message", "label"),
+    (
+        (_text(non_whitespace_characters=0), "installation_visible_message_not_russian"),
+        (_text(contains_markdown_code=True), "installation_visible_message_contains_markdown_code"),
+    ),
+)
+def test_installation_rejects_unsafe_or_empty_visible_messages(
+    message: TextEvidence, label: str
+) -> None:
+    evidence = _evidence(
+        ToolKind.MARKETPLACE_ADD,
+        ToolKind.PLUGIN_INSTALL,
+        ToolKind.LOGIN,
+        ToolKind.NEW_CHAT_URI,
+        texts=(_text(), message),
+    )
+
+    with pytest.raises(ProductionE2EError, match=label):
+        _runner(_profile(), _Driver(evidence)).run()
+
+
+def test_installation_accepts_new_chat_attempt_without_a_tool_result() -> None:
+    evidence = _evidence(
+        ToolKind.MARKETPLACE_ADD,
+        ToolKind.PLUGIN_INSTALL,
+        ToolKind.LOGIN,
+        ToolKind.NEW_CHAT_URI,
+        texts=(_text(), _text()),
+    )
+    evidence = replace(
+        evidence,
+        successful_tool_results=evidence.successful_tool_results[:-1],
+        tool_results=evidence.tool_results[:-1],
+    )
+
+    assert _runner(_profile(), _Driver(evidence)).run().complete
+
+
+def test_installation_rejects_a_delayed_action_success() -> None:
+    evidence = _evidence(
+        ToolKind.MARKETPLACE_ADD,
+        ToolKind.PLUGIN_INSTALL,
+        ToolKind.LOGIN,
+        ToolKind.NEW_CHAT_URI,
+        texts=(_text(), _text()),
+    )
+    order = list(evidence.event_order)
+    marker = f"{ToolKind.MARKETPLACE_ADD.value}:success"
+    order.remove(marker)
+    order.insert(order.index(ToolKind.PLUGIN_INSTALL.value) + 1, marker)
+    evidence = replace(evidence, event_order=tuple(order))
+
+    with pytest.raises(ProductionE2EError, match="installation_event_order_invalid"):
+        _runner(_profile(), _Driver(evidence)).run()
 
 
 @pytest.mark.parametrize(
@@ -334,7 +421,7 @@ def test_refuses_to_suppress_normal_browser_login() -> None:
 
 
 def test_bash_classifier_requires_real_installation_command_semantics() -> None:
-    uri = "claude://code/new?q=%D0%A2%D0%B5%D1%81%D1%82"
+    uri = CONTROLLED_NEW_CHAT_URI
     assert (
         _classify_bash_command("echo 'claude mcp login plugin:sensai:sensai'", uri)
         is ToolKind.OTHER
@@ -354,7 +441,35 @@ def test_bash_classifier_requires_real_installation_command_semantics() -> None:
         is ToolKind.PLUGIN_INSTALL
     )
     assert _classify_bash_command(f"xdg-open {uri!r}", uri) is ToolKind.NEW_CHAT_URI
-    assert _classify_bash_command(f"xdg-open {uri}", uri) is ToolKind.OTHER
+    assert _classify_bash_command(f"xdg-open {uri}", uri) is ToolKind.NEW_CHAT_URI
+    assert _classify_bash_command("xdg-open claude://code/new?q=other", uri) is ToolKind.OTHER
+
+
+def test_bash_classifier_uses_the_controlled_action_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sensai_plugin.controlled_installation_policy as policy
+
+    replacement = (
+        ("claude", "plugin", "marketplace", "add", "reviewed-sensai"),
+        *policy.CONTROLLED_CLAUDE_LINUX_ACTIONS[1:],
+    )
+    monkeypatch.setattr(policy, "CONTROLLED_CLAUDE_LINUX_ACTIONS", replacement)
+
+    assert (
+        _classify_bash_command(
+            "claude plugin marketplace add reviewed-sensai",
+            CONTROLLED_NEW_CHAT_URI,
+        )
+        is ToolKind.MARKETPLACE_ADD
+    )
+    assert (
+        _classify_bash_command(
+            "claude plugin marketplace add blackvctr/sensai-plugin",
+            CONTROLLED_NEW_CHAT_URI,
+        )
+        is ToolKind.OTHER
+    )
 
 
 def test_parser_handles_empty_initial_tool_input_and_partial_json() -> None:
@@ -400,6 +515,49 @@ def test_parser_handles_empty_initial_tool_input_and_partial_json() -> None:
         "stream:content_block_stop",
         "user",
         "result",
+    )
+
+
+def test_parser_keeps_only_safe_facts_about_visible_message_content() -> None:
+    evidence = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text"},
+                },
+            },
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"text": "Открой `терми"},
+                },
+            },
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"text": "нал` для шага."},
+                },
+            },
+            {"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}},
+            {"type": "result"},
+        ]
+    )
+
+    assert evidence.text_messages == (
+        _text(
+            non_whitespace_characters=24,
+            cyrillic_letters=21,
+            latin_letters=0,
+            contains_markdown_code=True,
+        ),
     )
 
 

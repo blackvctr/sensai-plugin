@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from urllib.parse import urlencode
-
 import pytest
 
+from sensai_plugin.controlled_installation_policy import CONTROLLED_NEW_CHAT_URI
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_SONNET_5_MODEL,
+    NEUTRAL_IDENTITY,
+    PUBLIC_README_TEMPLATE,
     README_PATH,
     ClaudeNewChatUriAttempt,
     ClaudeVisibleMessage,
@@ -23,81 +24,77 @@ def _public_contract() -> PublicReadmeContract:
     return _public_contract_from_markdown(README_PATH.read_text(encoding="utf-8"))
 
 
+def _new_chat_uri() -> str:
+    return CONTROLLED_NEW_CHAT_URI
+
+
 def _valid_transcript() -> InstallationTranscript:
-    contract = _public_contract()
     return InstallationTranscript(
-        public_prompt=contract.russian_install_prompt,
+        public_prompt=_public_contract().russian_install_prompt,
         model=CLAUDE_SONNET_5_MODEL,
         events=(
-            ClaudeVisibleMessage(
-                text=contract.russian_authorization_message,
-            ),
+            ClaudeVisibleMessage(text="Сейчас установлю Sensai."),
             SensaiLoginStarted(),
             SensaiLoginCompleted(),
-            ClaudeNewChatUriAttempt(
-                uri=contract.russian_new_chat_uri,
-            ),
-            ClaudeVisibleMessage(text=contract.russian_ready_message),
+            ClaudeNewChatUriAttempt(uri=_new_chat_uri()),
+            ClaudeVisibleMessage(text="Подключение готово."),
             SensaiConnectionObserved(connected=True),
         ),
     )
 
 
-def test_reads_the_current_public_russian_prompt_and_new_chat_request() -> None:
+def test_reads_neutral_identity_and_exact_public_russian_prompt() -> None:
     contract = _public_contract()
 
+    assert contract.neutral_identity == NEUTRAL_IDENTITY
     assert contract.russian_install_prompt.startswith("Установи Sensai ")
     assert "\n" not in contract.russian_install_prompt
-    assert contract.russian_new_chat_request.startswith(
-        "Проконсультируйся с Sensai."  # noqa: RUF001 - exact public Russian request
-    )
-    assert contract.russian_new_chat_uri.endswith("%D0%B0%D1%85.")
 
 
-def test_rejects_unknown_duplicate_or_mismatched_install_manifest_data() -> None:
+def test_public_readme_is_the_exact_neutral_template() -> None:
     markdown = README_PATH.read_text(encoding="utf-8")
-    altered_documents = (
-        markdown.replace(
-            '"schema": "sensai-install-v2",',
-            '"schema": "sensai-install-v2",\n  "unexpected": true,',
-            1,
-        ),
-        markdown.replace(
-            '"schema": "sensai-install-v2",',
-            '"schema": "sensai-install-v2",\n  "schema": "sensai-install-v2",',
-            1,
-        ),
-        markdown.replace(
-            '"sensai@sensai",',
-            '"another-plugin",',
-            1,
-        ),
+
+    assert markdown == PUBLIC_README_TEMPLATE
+    assert "Publisher: Black Vector" in markdown
+    assert "Repository: https://github.com/blackvctr/sensai-plugin" in markdown
+    assert "Plugin: sensai" in markdown
+    assert "Version: 0.2.13" in markdown
+
+
+def test_rejects_any_extra_public_readme_content() -> None:
+    with pytest.raises(ValueError):
+        _public_contract_from_markdown(PUBLIC_README_TEMPLATE + "\nExtra content.\n")
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        "Another product identity.",
+        "Sensai is a local plugin.\n\n```text\nУстанови Sensai https://example.test/readme\n```",  # noqa: RUF001
+    ),
+)
+def test_rejects_a_readme_without_neutral_identity_or_public_prompt(replacement: str) -> None:
+    markdown = README_PATH.read_text(encoding="utf-8")
+    if replacement.startswith("Another"):
+        markdown = markdown.replace(NEUTRAL_IDENTITY, replacement)
+    else:
+        markdown = replacement
+
+    with pytest.raises(ValueError):
+        _public_contract_from_markdown(markdown)
+
+
+def test_rejects_prompt_outside_its_one_line_text_block() -> None:
+    markdown = README_PATH.read_text(encoding="utf-8").replace(
+        "```text\nУстанови",  # noqa: RUF001
+        "```\nУстанови",  # noqa: RUF001
     )
 
-    for altered in altered_documents:
-        with pytest.raises(ValueError):
-            _public_contract_from_markdown(altered)
+    with pytest.raises(ValueError):
+        _public_contract_from_markdown(markdown)
 
 
-def test_ignores_an_unrelated_russian_prompt_before_the_human_installation_section() -> None:
-    markdown = README_PATH.read_text(encoding="utf-8")
-    unrelated_prefix = "Russian:\n\n```text\nНе та строка\n```\n\n"  # noqa: RUF001 - fixture
-
-    assert _public_contract_from_markdown(unrelated_prefix + markdown) == _public_contract()
-
-
-def test_ignores_an_unrelated_russian_link_in_the_chatgpt_desktop_section() -> None:
-    markdown = README_PATH.read_text(encoding="utf-8")
-    unrelated_link = (
-        "### ChatGPT Desktop\n\n"
-        "- Russian: [Другой разговор](claude://code/new?q=%D0%94%D1%80%D1%83%D0%B3%D0%BE%D0%B9)\n"
-    )
-    altered = markdown.replace("### ChatGPT Desktop\n", unrelated_link, 1)
-
-    assert _public_contract_from_markdown(altered) == _public_contract()
-
-
-def test_accepts_the_exact_public_russian_success_path() -> None:
+def test_accepts_observed_russian_installation_path_without_forced_replies() -> None:
     report = evaluate_installation_transcript(_valid_transcript())
 
     assert report.passed
@@ -107,10 +104,7 @@ def test_rejects_a_stale_or_extended_public_prompt() -> None:
     transcript = _valid_transcript()
     report = evaluate_installation_transcript(
         InstallationTranscript(
-            public_prompt=(
-                transcript.public_prompt
-                + "\nСначала ответь по-русски."  # noqa: RUF001 - stale Russian second line
-            ),
+            public_prompt=transcript.public_prompt + "\nДополнение",  # noqa: RUF001
             model=transcript.model,
             events=transcript.events,
         )
@@ -119,7 +113,7 @@ def test_rejects_a_stale_or_extended_public_prompt() -> None:
     assert report.failures == ("public_prompt_not_exact",)
 
 
-def test_rejects_any_model_other_than_claude_sonnet_5() -> None:
+def test_rejects_another_model() -> None:
     transcript = _valid_transcript()
     report = evaluate_installation_transcript(
         InstallationTranscript(
@@ -135,176 +129,67 @@ def test_rejects_any_model_other_than_claude_sonnet_5() -> None:
 def test_rejects_english_visible_message_by_unicode_letters() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events[0] = ClaudeVisibleMessage(
-        text="I will install Sensai myself. Select your Google account.",
-    )
+    events[0] = ClaudeVisibleMessage(text="I will install Sensai now.")
 
     report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=tuple(events),
-        )
+        InstallationTranscript(transcript.public_prompt, transcript.model, tuple(events))
     )
 
-    assert report.failures == (
-        "authorization_message_not_exact",
-        "visible_message_not_russian",
-    )
+    assert report.failures == ("visible_message_not_russian",)
 
 
-def test_rejects_duplicate_google_login_even_when_everything_else_is_observed() -> None:
+def test_rejects_duplicate_login_and_wrong_event_order() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
     events.insert(2, SensaiLoginStarted())
 
     report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=tuple(events),
-        )
+        InstallationTranscript(transcript.public_prompt, transcript.model, tuple(events))
     )
 
-    assert report.failures == (
-        "unsafe_event_order",
-        "google_login_start_count_invalid",
-    )
+    assert report.failures == ("unsafe_event_order", "google_login_start_count_invalid")
 
 
-def test_rejects_a_third_user_directed_message() -> None:
+def test_rejects_unverified_connection() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events.insert(1, ClaudeVisibleMessage(text="Подождите, пожалуйста."))
+    events[-1] = SensaiConnectionObserved(connected=False)
 
     report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=tuple(events),
-        )
+        InstallationTranscript(transcript.public_prompt, transcript.model, tuple(events))
     )
 
-    assert report.failures == ("unsafe_event_order",)
+    assert report.failures == ("sensai_connection_not_verified",)
 
 
-def test_rejects_missing_or_unsuccessful_sensai_connection() -> None:
-    transcript = _valid_transcript()
-    events = tuple(
-        event for event in transcript.events if not isinstance(event, SensaiConnectionObserved)
-    )
-
-    report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=events,
-        )
-    )
-
-    assert report.failures == ("unsafe_event_order", "sensai_connection_not_verified")
-
-
-def test_rejects_a_different_russian_new_chat_request() -> None:
+@pytest.mark.parametrize(
+    "uri",
+    (
+        "claude://code/new?q",
+        "claude://code/new?q=English",
+        "claude://code/new?q=%D0%A2%D0%B5%D1%81%D1%82",
+        "https://x",
+    ),
+)
+def test_rejects_any_new_chat_uri_other_than_local_canonical_uri(uri: str) -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events[3] = ClaudeNewChatUriAttempt(
-        uri="claude://code/new?"
-        + urlencode(
-            {"q": "Открой новый разговор с Sensai."}  # noqa: RUF001 - alternate Russian request
-        ),
-    )
+    events[3] = ClaudeNewChatUriAttempt(uri=uri)
 
     report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=tuple(events),
-        )
+        InstallationTranscript(transcript.public_prompt, transcript.model, tuple(events))
     )
 
     assert report.failures == ("wrong_new_chat_uri",)
 
 
-def test_rejects_invisible_leading_or_trailing_whitespace_in_new_chat_request() -> None:
-    transcript = _valid_transcript()
-    request = _public_contract().russian_new_chat_request
-
-    for changed_request in (f" {request}", f"{request} "):
-        events = list(transcript.events)
-        events[3] = ClaudeNewChatUriAttempt(
-            uri="claude://code/new?" + urlencode({"q": changed_request}),
-        )
-        report = evaluate_installation_transcript(
-            InstallationTranscript(
-                public_prompt=transcript.public_prompt,
-                model=transcript.model,
-                events=tuple(events),
-            )
-        )
-
-        assert report.failures == ("wrong_new_chat_uri",)
-
-
-def test_rejects_a_malformed_claude_new_chat_uri_without_crashing() -> None:
+def test_rejects_markdown_code_in_a_visible_message() -> None:
     transcript = _valid_transcript()
     events = list(transcript.events)
-    events[3] = ClaudeNewChatUriAttempt(uri="claude://code/new?q")
+    events[0] = ClaudeVisibleMessage(text="`Готово`.")
 
     report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=tuple(events),
-        )
+        InstallationTranscript(transcript.public_prompt, transcript.model, tuple(events))
     )
 
-    assert report.failures == ("wrong_new_chat_uri",)
-
-
-def test_rejects_a_new_chat_uri_before_the_verified_connection() -> None:
-    transcript = _valid_transcript()
-    events = list(transcript.events)
-    events[3], events[4] = events[4], events[3]
-
-    report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=tuple(events),
-        )
-    )
-
-    assert report.failures == ("unsafe_event_order",)
-
-
-def test_rejects_the_old_order_that_announced_readiness_before_uri_attempt() -> None:
-    transcript = _valid_transcript()
-    events = list(transcript.events)
-    events[-2], events[-1] = events[-1], events[-2]
-
-    report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=tuple(events),
-        )
-    )
-
-    assert report.failures == ("unsafe_event_order",)
-
-
-def test_rejects_an_altered_ready_message() -> None:
-    transcript = _valid_transcript()
-    events = list(transcript.events)
-    events[4] = ClaudeVisibleMessage(text="Готово.")
-
-    report = evaluate_installation_transcript(
-        InstallationTranscript(
-            public_prompt=transcript.public_prompt,
-            model=transcript.model,
-            events=tuple(events),
-        )
-    )
-
-    assert report.failures == ("ready_message_not_exact",)
+    assert report.failures == ("visible_message_not_russian",)

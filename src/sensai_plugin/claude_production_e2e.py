@@ -1,8 +1,9 @@
-"""Run the public Sensai installation acceptance from a local Claude profile.
+"""Run controlled local acceptance of Sensai installation from a Claude profile.
 
-The check ends after installation, normal Sensai login, and the published
-second-chat URI attempt. It never begins a consultation or inspects server
-internals.
+The public README supplies only the exact human prompt. The local controlled
+policy owns the fixed actions, canonical second-chat URI, and observable gates.
+The check ends after the exact new-chat attempt and before a consultation; it
+never inspects server internals.
 """
 
 from __future__ import annotations
@@ -26,7 +27,13 @@ from pathlib import Path
 from typing import Protocol
 from urllib.request import Request, urlopen
 
+from sensai_plugin import controlled_installation_policy
 from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
+from sensai_plugin.controlled_installation_policy import (
+    CONTROLLED_NEW_CHAT_URI,
+    ObservableMessageFacts,
+    message_facts_meet_contract,
+)
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_SONNET_5_MODEL,
     PublicReadmeContract,
@@ -42,8 +49,7 @@ MAX_STREAM_BYTES = 2 * 1024 * 1024
 MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
-_E2E_WEBFETCH_PERMISSION = "WebFetch(domain:raw.githubusercontent.com)"
-
+_CONTROLLED_WEBFETCH_PERMISSION = "WebFetch(domain:raw.githubusercontent.com)"
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
 _LATIN = re.compile(r"[A-Za-z]")
@@ -143,11 +149,7 @@ class ExitStage(StrEnum):
     UNKNOWN = "unknown"
 
 
-@dataclass(frozen=True, slots=True)
-class TextEvidence:
-    matches_expected: bool
-    cyrillic_letters: int
-    latin_letters: int
+TextEvidence = ObservableMessageFacts
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +188,7 @@ class AgentEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ProductionE2EReport:
-    installation_messages_exact: bool
+    russian_messages_observed: bool
     normal_login_started: bool
     normal_login_completed: bool
     sensai_connection_verified: bool
@@ -197,7 +199,7 @@ class ProductionE2EReport:
     def complete(self) -> bool:
         return all(
             (
-                self.installation_messages_exact,
+                self.russian_messages_observed,
                 self.normal_login_started,
                 self.normal_login_completed,
                 self.sensai_connection_verified,
@@ -215,7 +217,6 @@ class ClaudeDriver(Protocol):
         cwd: Path,
         environment: dict[str, str],
         timeout_seconds: int,
-        expected_visible_messages: Sequence[str],
         expected_session: uuid.UUID,
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence: ...
@@ -248,30 +249,22 @@ class ClaudeDriver(Protocol):
     ) -> bool: ...
 
 
-class _Digest(Protocol):
-    def update(self, data: bytes) -> None: ...
-
-    def digest(self) -> bytes: ...
-
-
 @dataclass(slots=True)
 class _TextAccumulator:
-    digest: _Digest
+    non_whitespace_characters: int = 0
     cyrillic_letters: int = 0
     latin_letters: int = 0
+    contains_markdown_code: bool = False
 
     @classmethod
     def new(cls) -> _TextAccumulator:
-        return cls(hashlib.sha256())
+        return cls()
 
     def add(self, text: str) -> None:
-        self.digest.update(text.encode("utf-8"))
+        self.non_whitespace_characters += sum(not character.isspace() for character in text)
         self.cyrillic_letters += len(_CYRILLIC.findall(text))
         self.latin_letters += len(_LATIN.findall(text))
-
-    def matches(self, expected: str) -> bool:
-        expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
-        return self.digest.digest() == expected_digest
+        self.contains_markdown_code |= "`" in text
 
 
 @dataclass(slots=True)
@@ -322,24 +315,15 @@ def _classify_bash_command(command: str, expected_new_chat_uri: str | None) -> T
         return ToolKind.OTHER
     if "--no-browser" in tokens:
         return ToolKind.FORBIDDEN_BROWSER_MODE
-    if (
-        expected_new_chat_uri is not None
-        and command == _new_chat_bash_command(expected_new_chat_uri)
-    ):
+    actions = controlled_installation_policy.CONTROLLED_CLAUDE_LINUX_ACTIONS
+    marketplace_add, plugin_install, sensai_login, new_chat = actions
+    if expected_new_chat_uri == CONTROLLED_NEW_CHAT_URI and tuple(tokens) == new_chat:
         return ToolKind.NEW_CHAT_URI
-    if tokens and tokens[0] == "script" and "-c" in tokens:
-        position = tokens.index("-c") + 1
-        if position >= len(tokens):
-            return ToolKind.OTHER
-        try:
-            tokens = shlex.split(tokens[position], posix=True)
-        except ValueError:
-            return ToolKind.OTHER
-    if tokens == ["claude", "mcp", "login", "plugin:sensai:sensai"]:
+    if tuple(tokens) == sensai_login:
         return ToolKind.LOGIN
-    if tokens == ["claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]:
+    if tuple(tokens) == marketplace_add:
         return ToolKind.MARKETPLACE_ADD
-    if tokens == ["claude", "plugin", "install", "sensai@sensai", "--scope", "user"]:
+    if tuple(tokens) == plugin_install:
         return ToolKind.PLUGIN_INSTALL
     return ToolKind.OTHER
 
@@ -386,7 +370,6 @@ def _consume_stream(
     process: subprocess.Popen[bytes],
     *,
     timeout_seconds: int,
-    expected_visible_messages: Sequence[str],
     expected_session: uuid.UUID,
     expected_new_chat_uri: str | None,
 ) -> AgentEvidence:
@@ -477,7 +460,14 @@ def _consume_stream(
                     kind = (
                         outstanding.pop(key, ToolKind.OTHER) if key is not None else ToolKind.OTHER
                     )
-                    results.append(ToolResultEvidence(kind, block.get("is_error") is not True))
+                    succeeded = block.get("is_error") is not True
+                    results.append(ToolResultEvidence(kind, succeeded))
+                    if succeeded and kind in {
+                        ToolKind.MARKETPLACE_ADD,
+                        ToolKind.PLUGIN_INSTALL,
+                        ToolKind.LOGIN,
+                    }:
+                        order.append(f"{kind.value}:success")
             return
         event = _stream_event(record)
         if not isinstance(event, dict):
@@ -528,17 +518,12 @@ def _consume_stream(
                 return
             text = text_blocks.pop(index, None)
             if text is not None:
-                position = len(texts)
-                expected = (
-                    expected_visible_messages[position]
-                    if position < len(expected_visible_messages)
-                    else None
-                )
                 texts.append(
                     TextEvidence(
-                        matches_expected=expected is not None and text.matches(expected),
+                        non_whitespace_characters=text.non_whitespace_characters,
                         cyrillic_letters=text.cyrillic_letters,
                         latin_letters=text.latin_letters,
+                        contains_markdown_code=text.contains_markdown_code,
                     )
                 )
                 order.append("visible")
@@ -645,7 +630,6 @@ class SubprocessClaudeDriver:
         cwd: Path,
         environment: dict[str, str],
         timeout_seconds: int,
-        expected_visible_messages: Sequence[str],
         expected_session: uuid.UUID,
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence:
@@ -665,7 +649,6 @@ class SubprocessClaudeDriver:
         return _consume_stream(
             process,
             timeout_seconds=timeout_seconds,
-            expected_visible_messages=expected_visible_messages,
             expected_session=expected_session,
             expected_new_chat_uri=expected_new_chat_uri,
         )
@@ -771,12 +754,13 @@ def _is_exact_public_sensai_inventory(entries: object) -> bool:
     )
 
 
-def _e2e_allowed_tools(claude_linux_actions: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
+def _e2e_allowed_tools() -> tuple[str, ...]:
     marketplace_add, plugin_install, sensai_login, new_chat = (
-        shlex.join(action) for action in claude_linux_actions
+        shlex.join(action)
+        for action in controlled_installation_policy.CONTROLLED_CLAUDE_LINUX_ACTIONS
     )
     return (
-        _E2E_WEBFETCH_PERMISSION,
+        _CONTROLLED_WEBFETCH_PERMISSION,
         f"Bash({marketplace_add})",
         f"Bash({plugin_install})",
         f"Bash({sensai_login})",
@@ -793,9 +777,8 @@ def _agent_command(
     *,
     prompt: str,
     session: uuid.UUID,
-    claude_linux_actions: tuple[tuple[str, ...], ...],
 ) -> tuple[str, ...]:
-    allowed_tools = _e2e_allowed_tools(claude_linux_actions)
+    allowed_tools = _e2e_allowed_tools()
     command = (
         executable,
         "-p",
@@ -836,7 +819,7 @@ def _plugin_list_command(executable: str) -> tuple[str, ...]:
 
 
 class ProductionSensaiE2E:
-    """One explicit local check of the public Sensai installation path."""
+    """One controlled local acceptance check; it never executes README instructions."""
 
     def __init__(
         self,
@@ -867,21 +850,16 @@ class ProductionSensaiE2E:
             timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
         ):
             raise ProductionE2EError("isolated_claude_auth_not_verified")
-        new_chat_uri = contract.russian_new_chat_uri
+        new_chat_uri = CONTROLLED_NEW_CHAT_URI
         installation = self._driver.run_agent(
             _agent_command(
                 executable,
                 prompt=contract.russian_install_prompt,
                 session=session,
-                claude_linux_actions=contract.claude_linux_actions,
             ),
             cwd=run.work,
             environment=run.environment,
             timeout_seconds=INSTALL_TIMEOUT_SECONDS,
-            expected_visible_messages=(
-                contract.russian_authorization_message,
-                contract.russian_ready_message,
-            ),
             expected_session=session,
             expected_new_chat_uri=new_chat_uri,
         )
@@ -925,11 +903,11 @@ class ProductionSensaiE2E:
             raise ProductionE2EError("installation_terminal_result_missing")
         if not evidence.session_verified:
             raise ProductionE2EError("installation_session_not_verified")
-        if len(evidence.text_messages) != 2 or not all(
-            item.matches_expected for item in evidence.text_messages
-        ):
-            raise ProductionE2EError("installation_messages_not_exact")
-        if any(item.cyrillic_letters <= item.latin_letters for item in evidence.text_messages):
+        if len(evidence.text_messages) != 2:
+            raise ProductionE2EError("installation_visible_message_count_invalid")
+        if any(item.contains_markdown_code for item in evidence.text_messages):
+            raise ProductionE2EError("installation_visible_message_contains_markdown_code")
+        if any(not message_facts_meet_contract(item) for item in evidence.text_messages):
             raise ProductionE2EError("installation_visible_message_not_russian")
         for kind in (ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL, ToolKind.LOGIN):
             if not evidence.has_successful(kind):
@@ -941,8 +919,11 @@ class ProductionSensaiE2E:
         if evidence.event_order != (
             "visible",
             ToolKind.MARKETPLACE_ADD.value,
+            f"{ToolKind.MARKETPLACE_ADD.value}:success",
             ToolKind.PLUGIN_INSTALL.value,
+            f"{ToolKind.PLUGIN_INSTALL.value}:success",
             ToolKind.LOGIN.value,
+            f"{ToolKind.LOGIN.value}:success",
             ToolKind.NEW_CHAT_URI.value,
             "visible",
         ):

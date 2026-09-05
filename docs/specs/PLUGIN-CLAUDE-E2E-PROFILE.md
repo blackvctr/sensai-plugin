@@ -95,8 +95,8 @@ supplies all of these isolated locations to the future Claude process:
 - `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_DATA_HOME`
 - `TMPDIR`, `TMP`, and `TEMP`
 
-Compatibility E2E fixes `claude-sonnet-5`; the public README's Opus
-recommendation remains for normal human installation. The run includes an empty private `work`
+Controlled installation acceptance fixes `claude-sonnet-5` as local test policy.
+The neutral public README does not recommend a model. The run includes an empty private `work`
 directory. Every future Claude subprocess must use that exact directory as its
 current working directory; it must not run from this repository or from the
 persistent profile. The run starts with no plugin, MCP, Sensai, cache, or prior
@@ -109,3 +109,17 @@ This component prepares local state only. It does not prove that the copied
 Claude login works, that Google consent succeeds, that Sensai is reachable, or
 that installation works. The later production E2E owns those facts and must use
 the public plugin and production Sensai server.
+
+## Controlled installation acceptance
+
+`claude_production_e2e.py` is a local controlled-acceptance test, not an
+interpreter for the public README. Its fixed local policy limits Claude to four
+allowed actions and defines the canonical new-chat URI. The test validates the
+observed action order after the run. Beyond normal Claude Code behavior, it adds
+no prompt to the exact public Russian installation request.
+
+The test keeps only in-memory facts about the two visible messages: their
+non-whitespace length, Cyrillic and Latin letter counts, and a boolean for
+Markdown code. This safety filter rejects code-shaped replies. It is not a
+semantic proof that a reply is helpful, complete, or truthful. No visible
+message text is written to the report or retained after stream parsing.
