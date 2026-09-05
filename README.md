@@ -1,91 +1,12 @@
-# Sensai Plugin
+# Sensai
 
-Sensai is a local plugin that helps a person's AI assistant select and set up a useful connector or built-in tool for current work. The person chooses and approves account access in the host application's normal browser flow.
+Sensai is a plugin for a person's AI assistant. It helps choose a useful connector or built-in tool for current work.
 
-## Installation (if you are human)
+## Publisher and package
 
-1. Use ChatGPT Desktop on the Codex tab or Claude Desktop on the Code tab.
-2. Start a new chat and send the matching public request.
+Sensai is published by Black Vector in its [public repository](https://github.com/blackvctr/sensai-plugin).
+The published package is `sensai`, version `0.2.13`.
 
-Russian:
-
-```text
-Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
-```
-
-English:
-
-```text
-Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
-```
-
-## Installation manifest
-
-This JSON document records the public installation flow. It is data for an already-authorized host installation process; the host's own safety and permission rules remain authoritative. The manifest is an unsigned public format, not cryptographic proof of a publisher.
-
-```json
-{
-  "schema": "sensai-install-v2",
-  "hosts": {
-    "claude_desktop": {
-      "linux_actions": [
-        {
-          "id": "marketplace_add",
-          "tool": "Bash",
-          "argv": ["claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]
-        },
-        {
-          "id": "plugin_install",
-          "tool": "Bash",
-          "argv": ["claude", "plugin", "install", "sensai@sensai", "--scope", "user"]
-        },
-        {
-          "id": "sensai_login",
-          "tool": "Bash",
-          "argv": ["script", "-q", "-c", "claude mcp login plugin:sensai:sensai", "/dev/null"]
-        },
-        {
-          "id": "new_chat",
-          "tool": "Bash",
-          "argv": ["xdg-open", "claude://code/new?q=%D0%9F%D1%80%D0%BE%D0%BA%D0%BE%D0%BD%D1%81%D1%83%D0%BB%D1%8C%D1%82%D0%B8%D1%80%D1%83%D0%B9%D1%81%D1%8F%20%D1%81%20Sensai.%20%D0%A1%D0%BD%D0%B0%D1%87%D0%B0%D0%BB%D0%B0%20%D0%B7%D0%B0%D0%B4%D0%B0%D0%B9%20%D0%BC%D0%BD%D0%B5%20%D0%B2%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D1%8B%20%D0%BE%20%D0%BC%D0%BE%D0%B5%D0%B9%20%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B5%2C%20%D0%BE%D0%B1%D1%8B%D1%87%D0%BD%D1%8B%D1%85%20%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B0%D1%85%20%D0%B8%20%D0%BF%D0%BE%D0%B2%D1%82%D0%BE%D1%80%D1%8F%D1%8E%D1%89%D0%B8%D1%85%D1%81%D1%8F%20%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%D1%85."]
-        }
-      ],
-      "russian": {
-        "visible_messages": [
-          {
-            "phase": "before_google_sign_in",
-            "text": "Я сам установлю Sensai. Сейчас откроется обычное окно Google: выберите свой аккаунт и подтвердите доступ, чтобы Sensai мог продолжать этот рабочий разговор в следующих чатах."
-          },
-          {
-            "phase": "after_new_chat_attempt",
-            "text": "Sensai установлен. Я попытался открыть новый разговор с подготовленным сообщением. Если он появился, нажмите Enter."
-          }
-        ]
-      }
-    },
-    "chatgpt_desktop": {
-      "actions": [
-        {
-          "id": "marketplace_add",
-          "tool": "Bash",
-          "argv": ["codex", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]
-        },
-        {
-          "id": "plugin_install",
-          "tool": "Bash",
-          "argv": ["codex", "plugin", "add", "sensai@sensai"]
-        },
-        {
-          "id": "sensai_login",
-          "tool": "Bash",
-          "argv": ["codex", "mcp", "login", "sensai"]
-        }
-      ]
-    }
-  }
-}
-```
-
-## Manual recovery
-
-Human-readable recovery guidance is published separately from this manifest.
+- [Claude Code marketplace metadata](https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/.claude-plugin/marketplace.json)
+- [Claude Code plugin metadata](https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.claude-plugin/plugin.json)
+- [Sensai MCP metadata](https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.mcp.json)
