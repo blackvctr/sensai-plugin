@@ -1,9 +1,8 @@
-"""Run controlled local acceptance of Sensai installation from a Claude profile.
+"""Run the public Sensai installation acceptance from a local Claude profile.
 
-The public README supplies only the exact human prompt. The local controlled
-policy owns the fixed actions, canonical second-chat URI, and observable gates.
-The check ends after the exact new-chat attempt and before a consultation; it
-never inspects server internals.
+The check ends after installation, normal Sensai login, and the published
+second-chat URI attempt. It never begins a consultation or inspects server
+internals.
 """
 
 from __future__ import annotations
@@ -27,13 +26,7 @@ from pathlib import Path
 from typing import Protocol
 from urllib.request import Request, urlopen
 
-from sensai_plugin import controlled_installation_policy
 from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
-from sensai_plugin.controlled_installation_policy import (
-    CONTROLLED_NEW_CHAT_URI,
-    ObservableMessageFacts,
-    message_facts_meet_contract,
-)
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_SONNET_5_MODEL,
     PublicReadmeContract,
@@ -46,11 +39,11 @@ PROCESS_TERMINATION_GRACE_SECONDS = 3
 MAX_STREAM_LINE_BYTES = 256 * 1024
 MAX_STREAM_EVENTS = 128
 MAX_STREAM_BYTES = 2 * 1024 * 1024
-MAX_STDERR_BYTES = 256 * 1024
 MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
-_CONTROLLED_WEBFETCH_PERMISSION = "WebFetch(domain:raw.githubusercontent.com)"
+_E2E_WEBFETCH_PERMISSION = "WebFetch(domain:raw.githubusercontent.com)"
+
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
 _LATIN = re.compile(r"[A-Za-z]")
@@ -118,13 +111,6 @@ class ExitCategory(StrEnum):
     NONZERO_UNCLASSIFIED = "nonzero_unclassified"
 
 
-class StreamLimitReason(StrEnum):
-    EVENT_COUNT = "event_count"
-    STDOUT_BYTES = "stdout_bytes"
-    LINE_BYTES = "line_bytes"
-    STDERR_BYTES = "stderr_bytes"
-
-
 class TerminalResultKind(StrEnum):
     NONE = "none"
     SUCCESS = "success"
@@ -157,7 +143,11 @@ class ExitStage(StrEnum):
     UNKNOWN = "unknown"
 
 
-TextEvidence = ObservableMessageFacts
+@dataclass(frozen=True, slots=True)
+class TextEvidence:
+    matches_expected: bool
+    cyrillic_letters: int
+    latin_letters: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,11 +176,6 @@ class AgentEvidence:
     terminal_result_kind: TerminalResultKind
     terminal_error_count: int
     stderr_seen: bool
-    stream_limit_reason: StreamLimitReason | None = None
-    stream_event_count: int = 0
-    stdout_bytes: int = 0
-    stderr_bytes: int = 0
-    record_kind_counts: tuple[tuple[str, int], ...] = ()
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -201,7 +186,7 @@ class AgentEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ProductionE2EReport:
-    russian_messages_observed: bool
+    installation_messages_exact: bool
     normal_login_started: bool
     normal_login_completed: bool
     sensai_connection_verified: bool
@@ -212,7 +197,7 @@ class ProductionE2EReport:
     def complete(self) -> bool:
         return all(
             (
-                self.russian_messages_observed,
+                self.installation_messages_exact,
                 self.normal_login_started,
                 self.normal_login_completed,
                 self.sensai_connection_verified,
@@ -230,6 +215,7 @@ class ClaudeDriver(Protocol):
         cwd: Path,
         environment: dict[str, str],
         timeout_seconds: int,
+        expected_visible_messages: Sequence[str],
         expected_session: uuid.UUID,
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence: ...
@@ -262,22 +248,30 @@ class ClaudeDriver(Protocol):
     ) -> bool: ...
 
 
+class _Digest(Protocol):
+    def update(self, data: bytes) -> None: ...
+
+    def digest(self) -> bytes: ...
+
+
 @dataclass(slots=True)
 class _TextAccumulator:
-    non_whitespace_characters: int = 0
+    digest: _Digest
     cyrillic_letters: int = 0
     latin_letters: int = 0
-    contains_markdown_code: bool = False
 
     @classmethod
     def new(cls) -> _TextAccumulator:
-        return cls()
+        return cls(hashlib.sha256())
 
     def add(self, text: str) -> None:
-        self.non_whitespace_characters += sum(not character.isspace() for character in text)
+        self.digest.update(text.encode("utf-8"))
         self.cyrillic_letters += len(_CYRILLIC.findall(text))
         self.latin_letters += len(_LATIN.findall(text))
-        self.contains_markdown_code |= "`" in text
+
+    def matches(self, expected: str) -> bool:
+        expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
+        return self.digest.digest() == expected_digest
 
 
 @dataclass(slots=True)
@@ -328,15 +322,24 @@ def _classify_bash_command(command: str, expected_new_chat_uri: str | None) -> T
         return ToolKind.OTHER
     if "--no-browser" in tokens:
         return ToolKind.FORBIDDEN_BROWSER_MODE
-    actions = controlled_installation_policy.CONTROLLED_CLAUDE_LINUX_ACTIONS
-    marketplace_add, plugin_install, sensai_login, new_chat = actions
-    if expected_new_chat_uri == CONTROLLED_NEW_CHAT_URI and tuple(tokens) == new_chat:
+    if (
+        expected_new_chat_uri is not None
+        and command == _new_chat_bash_command(expected_new_chat_uri)
+    ):
         return ToolKind.NEW_CHAT_URI
-    if tuple(tokens) == sensai_login:
+    if tokens and tokens[0] == "script" and "-c" in tokens:
+        position = tokens.index("-c") + 1
+        if position >= len(tokens):
+            return ToolKind.OTHER
+        try:
+            tokens = shlex.split(tokens[position], posix=True)
+        except ValueError:
+            return ToolKind.OTHER
+    if tokens == ["claude", "mcp", "login", "plugin:sensai:sensai"]:
         return ToolKind.LOGIN
-    if tuple(tokens) == marketplace_add:
+    if tokens == ["claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]:
         return ToolKind.MARKETPLACE_ADD
-    if tuple(tokens) == plugin_install:
+    if tokens == ["claude", "plugin", "install", "sensai@sensai", "--scope", "user"]:
         return ToolKind.PLUGIN_INSTALL
     return ToolKind.OTHER
 
@@ -383,6 +386,7 @@ def _consume_stream(
     process: subprocess.Popen[bytes],
     *,
     timeout_seconds: int,
+    expected_visible_messages: Sequence[str],
     expected_session: uuid.UUID,
     expected_new_chat_uri: str | None,
 ) -> AgentEvidence:
@@ -399,12 +403,10 @@ def _consume_stream(
     deadline = time.monotonic() + timeout_seconds
     pending = bytearray()
     total_bytes = 0
-    stderr_bytes = 0
     event_count = 0
     malformed = False
     unclosed_block = False
     stream_limit_exceeded = False
-    stream_limit_reason: StreamLimitReason | None = None
     timed_out = False
     result_seen = False
     session_verified = False
@@ -420,13 +422,6 @@ def _consume_stream(
     results: list[ToolResultEvidence] = []
     order: list[str] = []
     record_kinds: list[str] = []
-    record_kind_counts: dict[str, int] = {}
-
-    def set_stream_limit(reason: StreamLimitReason) -> None:
-        nonlocal stream_limit_exceeded, stream_limit_reason
-        if stream_limit_reason is None:
-            stream_limit_exceeded = True
-            stream_limit_reason = reason
 
     def record_kind(record: object) -> str:
         if not isinstance(record, dict):
@@ -454,16 +449,14 @@ def _consume_stream(
             return
         event_count += 1
         if event_count > MAX_STREAM_EVENTS:
-            set_stream_limit(StreamLimitReason.EVENT_COUNT)
+            stream_limit_exceeded = True
             return
         try:
             record = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             malformed = True
             return
-        kind_name = record_kind(record)
-        record_kinds.append(kind_name)
-        record_kind_counts[kind_name] = record_kind_counts.get(kind_name, 0) + 1
+        record_kinds.append(record_kind(record))
         if _verify_session(record, expected_session):
             session_verified = True
         if isinstance(record, dict) and record.get("type") == "result":
@@ -484,14 +477,7 @@ def _consume_stream(
                     kind = (
                         outstanding.pop(key, ToolKind.OTHER) if key is not None else ToolKind.OTHER
                     )
-                    succeeded = block.get("is_error") is not True
-                    results.append(ToolResultEvidence(kind, succeeded))
-                    if succeeded and kind in {
-                        ToolKind.MARKETPLACE_ADD,
-                        ToolKind.PLUGIN_INSTALL,
-                        ToolKind.LOGIN,
-                    }:
-                        order.append(f"{kind.value}:success")
+                    results.append(ToolResultEvidence(kind, block.get("is_error") is not True))
             return
         event = _stream_event(record)
         if not isinstance(event, dict):
@@ -542,12 +528,17 @@ def _consume_stream(
                 return
             text = text_blocks.pop(index, None)
             if text is not None:
+                position = len(texts)
+                expected = (
+                    expected_visible_messages[position]
+                    if position < len(expected_visible_messages)
+                    else None
+                )
                 texts.append(
                     TextEvidence(
-                        non_whitespace_characters=text.non_whitespace_characters,
+                        matches_expected=expected is not None and text.matches(expected),
                         cyrillic_letters=text.cyrillic_letters,
                         latin_letters=text.latin_letters,
-                        contains_markdown_code=text.contains_markdown_code,
                     )
                 )
                 order.append("visible")
@@ -570,16 +561,13 @@ def _consume_stream(
                     outstanding[tool.result_key] = kind
 
     try:
-        while process.poll() is None or pending or selector.get_map():
+        while process.poll() is None or pending:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 break
-            running = process.poll() is None
-            ready = selector.select(remaining if running else 0)
+            ready = selector.select(0 if process.poll() is not None else remaining)
             if not ready:
-                if not running:
-                    break
                 continue
             key, _ = ready[0]
             try:
@@ -589,37 +577,28 @@ def _consume_stream(
             if key.data == "stderr":
                 if chunk:
                     stderr_seen = True
-                    stderr_bytes += len(chunk)
-                    if stderr_bytes > MAX_STDERR_BYTES:
-                        set_stream_limit(StreamLimitReason.STDERR_BYTES)
                 else:
                     selector.unregister(key.fileobj)
-                if stream_limit_reason is not None:
-                    break
                 continue
             if not chunk:
                 if pending:
                     malformed = True
-                selector.unregister(key.fileobj)
-                continue
+                break
             total_bytes += len(chunk)
             if total_bytes > MAX_STREAM_BYTES:
-                set_stream_limit(StreamLimitReason.STDOUT_BYTES)
+                stream_limit_exceeded = True
                 break
             pending.extend(chunk)
             if len(pending) > MAX_STREAM_LINE_BYTES and b"\n" not in pending:
-                set_stream_limit(StreamLimitReason.LINE_BYTES)
+                malformed = True
                 break
             while b"\n" in pending:
                 line, _, rest = pending.partition(b"\n")
                 pending = bytearray(rest)
-                if len(line) > MAX_STREAM_LINE_BYTES:
-                    set_stream_limit(StreamLimitReason.LINE_BYTES)
-                    break
                 consume(bytes(line))
-                if malformed or stream_limit_reason is not None:
+                if malformed:
                     break
-            if malformed or stream_limit_reason is not None:
+            if malformed:
                 break
     finally:
         selector.close()
@@ -655,11 +634,6 @@ def _consume_stream(
         terminal_result_kind=terminal_result_kind,
         terminal_error_count=terminal_error_count,
         stderr_seen=stderr_seen,
-        stream_limit_reason=stream_limit_reason,
-        stream_event_count=event_count,
-        stdout_bytes=total_bytes,
-        stderr_bytes=stderr_bytes,
-        record_kind_counts=tuple(sorted(record_kind_counts.items())),
     )
 
 
@@ -671,6 +645,7 @@ class SubprocessClaudeDriver:
         cwd: Path,
         environment: dict[str, str],
         timeout_seconds: int,
+        expected_visible_messages: Sequence[str],
         expected_session: uuid.UUID,
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence:
@@ -690,6 +665,7 @@ class SubprocessClaudeDriver:
         return _consume_stream(
             process,
             timeout_seconds=timeout_seconds,
+            expected_visible_messages=expected_visible_messages,
             expected_session=expected_session,
             expected_new_chat_uri=expected_new_chat_uri,
         )
@@ -795,13 +771,12 @@ def _is_exact_public_sensai_inventory(entries: object) -> bool:
     )
 
 
-def _e2e_allowed_tools() -> tuple[str, ...]:
+def _e2e_allowed_tools(claude_linux_actions: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
     marketplace_add, plugin_install, sensai_login, new_chat = (
-        shlex.join(action)
-        for action in controlled_installation_policy.CONTROLLED_CLAUDE_LINUX_ACTIONS
+        shlex.join(action) for action in claude_linux_actions
     )
     return (
-        _CONTROLLED_WEBFETCH_PERMISSION,
+        _E2E_WEBFETCH_PERMISSION,
         f"Bash({marketplace_add})",
         f"Bash({plugin_install})",
         f"Bash({sensai_login})",
@@ -818,8 +793,9 @@ def _agent_command(
     *,
     prompt: str,
     session: uuid.UUID,
+    claude_linux_actions: tuple[tuple[str, ...], ...],
 ) -> tuple[str, ...]:
-    allowed_tools = _e2e_allowed_tools()
+    allowed_tools = _e2e_allowed_tools(claude_linux_actions)
     command = (
         executable,
         "-p",
@@ -860,7 +836,7 @@ def _plugin_list_command(executable: str) -> tuple[str, ...]:
 
 
 class ProductionSensaiE2E:
-    """One controlled local acceptance check; it never executes README instructions."""
+    """One explicit local check of the public Sensai installation path."""
 
     def __init__(
         self,
@@ -891,16 +867,21 @@ class ProductionSensaiE2E:
             timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
         ):
             raise ProductionE2EError("isolated_claude_auth_not_verified")
-        new_chat_uri = CONTROLLED_NEW_CHAT_URI
+        new_chat_uri = contract.russian_new_chat_uri
         installation = self._driver.run_agent(
             _agent_command(
                 executable,
                 prompt=contract.russian_install_prompt,
                 session=session,
+                claude_linux_actions=contract.claude_linux_actions,
             ),
             cwd=run.work,
             environment=run.environment,
             timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+            expected_visible_messages=(
+                contract.russian_authorization_message,
+                contract.russian_ready_message,
+            ),
             expected_session=session,
             expected_new_chat_uri=new_chat_uri,
         )
@@ -925,10 +906,8 @@ class ProductionSensaiE2E:
     def _require_installation(evidence: AgentEvidence) -> None:
         if evidence.timed_out:
             raise ProductionE2EError("installation_timed_out")
-        if evidence.stream_limit_reason is not None:
-            raise ProductionE2EError(f"installation_stream_limit_{evidence.stream_limit_reason}")
         if evidence.stream_limit_exceeded:
-            raise ProductionE2EError("installation_stream_limit_unknown")
+            raise ProductionE2EError("installation_stream_limit_exceeded")
         if evidence.malformed:
             raise ProductionE2EError("installation_stream_malformed")
         if evidence.unclosed_block:
@@ -946,11 +925,11 @@ class ProductionSensaiE2E:
             raise ProductionE2EError("installation_terminal_result_missing")
         if not evidence.session_verified:
             raise ProductionE2EError("installation_session_not_verified")
-        if len(evidence.text_messages) != 2:
-            raise ProductionE2EError("installation_visible_message_count_invalid")
-        if any(item.contains_markdown_code for item in evidence.text_messages):
-            raise ProductionE2EError("installation_visible_message_contains_markdown_code")
-        if any(not message_facts_meet_contract(item) for item in evidence.text_messages):
+        if len(evidence.text_messages) != 2 or not all(
+            item.matches_expected for item in evidence.text_messages
+        ):
+            raise ProductionE2EError("installation_messages_not_exact")
+        if any(item.cyrillic_letters <= item.latin_letters for item in evidence.text_messages):
             raise ProductionE2EError("installation_visible_message_not_russian")
         for kind in (ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL, ToolKind.LOGIN):
             if not evidence.has_successful(kind):
@@ -962,11 +941,8 @@ class ProductionSensaiE2E:
         if evidence.event_order != (
             "visible",
             ToolKind.MARKETPLACE_ADD.value,
-            f"{ToolKind.MARKETPLACE_ADD.value}:success",
             ToolKind.PLUGIN_INSTALL.value,
-            f"{ToolKind.PLUGIN_INSTALL.value}:success",
             ToolKind.LOGIN.value,
-            f"{ToolKind.LOGIN.value}:success",
             ToolKind.NEW_CHAT_URI.value,
             "visible",
         ):
