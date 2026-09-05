@@ -14,6 +14,7 @@ import pytest
 
 from sensai_plugin.claude_e2e_profile import provision_profile
 from sensai_plugin.claude_production_e2e import (
+    INSTALLATION_SCENARIO,
     PUBLIC_INSTALL_PROMPT,
     PUBLIC_README_URL,
     AgentEvidence,
@@ -38,6 +39,7 @@ from sensai_plugin.claude_production_e2e import (
     _force_permission_request,
     _is_allowed_oauth_entry_url,
     _is_exact_public_sensai_inventory,
+    _is_exact_public_sensai_mcp_status,
     fetch_public_readme_contract,
     fetch_public_readme_sha256,
 )
@@ -81,7 +83,13 @@ def _contract() -> PublicReadmeContract:
 
 
 def _text(*, expected: bool = True) -> TextEvidence:
-    return TextEvidence(expected, cyrillic_letters=12, latin_letters=2)
+    del expected
+    return TextEvidence(
+        cyrillic_letters=12,
+        latin_letters=2,
+        contains_code_block=False,
+        contains_terminal_reference=False,
+    )
 
 
 def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEvidence:
@@ -120,6 +128,7 @@ class _Call:
     environment: dict[str, str]
     expected_session: uuid.UUID | None
     expected_new_chat_uri: str | None = None
+    expected_visible_messages: tuple[str, ...] = ()
 
 
 class _Driver(ClaudeDriver):
@@ -149,7 +158,14 @@ class _Driver(ClaudeDriver):
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence:
         self.calls.append(
-            _Call(tuple(command), cwd, dict(environment), expected_session, expected_new_chat_uri)
+            _Call(
+                tuple(command),
+                cwd,
+                dict(environment),
+                expected_session,
+                expected_new_chat_uri,
+                tuple(expected_visible_messages),
+            )
         )
         return self.evidence
 
@@ -203,7 +219,6 @@ def _runner(profile: Path, driver: ClaudeDriver) -> ProductionSensaiE2E:
     return ProductionSensaiE2E(
         profile=profile,
         driver=driver,
-        contract_loader=_contract,
         expected_public_readme_sha256="0" * 64,
         public_readme_validator=lambda expected: expected,
         executable_resolver=lambda: "claude",
@@ -267,25 +282,36 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     assert installation.command[-1] == PUBLIC_INSTALL_PROMPT
     assert installation.command[installation.command.index("--model") + 1] == "claude-sonnet-5"
     assert "--no-browser" not in installation.command
-    assert installation.expected_new_chat_uri == _contract().russian_new_chat_uri
+    assert installation.expected_new_chat_uri == INSTALLATION_SCENARIO.new_chat_uri
+    assert installation.expected_visible_messages == ()
     assert all(call.cwd.name == "work" for call in driver.calls)
     assert not list((profile / "runs").iterdir())
 
 
 def test_installation_prompt_is_fixed_test_input_not_a_readme_value() -> None:
     driver = _successful_driver()
-    changed_local_boundary = replace(_contract(), russian_install_prompt="другая строка")
     runner = ProductionSensaiE2E(
         profile=_profile(),
         driver=driver,
-        contract_loader=lambda: changed_local_boundary,
         expected_public_readme_sha256="a" * 64,
         public_readme_validator=lambda expected: expected,
         executable_resolver=lambda: "claude",
     )
 
     assert runner.run().complete
-    assert driver.calls[1].command[-1] == PUBLIC_INSTALL_PROMPT
+    assert driver.calls[1].command[-1] == INSTALLATION_SCENARIO.prompt
+
+
+def test_full_runner_never_invokes_legacy_readme_contract_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sensai_plugin.claude_production_e2e as module
+
+    def parser_must_not_run() -> PublicReadmeContract:
+        raise AssertionError("the legacy README parser must not run in the full E2E")
+
+    monkeypatch.setattr(module, "load_local_installation_contract", parser_must_not_run)
+    assert _runner(_profile(), _successful_driver()).run().complete
 
 
 def test_first_comparison_keeps_only_redacted_first_reply_and_tool_categories() -> None:
@@ -299,7 +325,6 @@ def test_first_comparison_keeps_only_redacted_first_reply_and_tool_categories() 
     runner = ProductionSensaiE2E(
         profile=_profile(),
         driver=driver,
-        contract_loader=_contract,
         expected_public_readme_sha256="b" * 64,
         public_readme_validator=lambda expected: expected,
         executable_resolver=lambda: "claude",
@@ -320,7 +345,6 @@ def test_agent_command_exposes_tools_without_a_brittle_shell_allowlist() -> None
         "claude",
         prompt="Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md",
         session=uuid.uuid4(),
-        claude_linux_actions=tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS),
     )
 
     assert command[command.index("--tools") + 1] == "WebFetch,Bash"
@@ -328,17 +352,44 @@ def test_agent_command_exposes_tools_without_a_brittle_shell_allowlist() -> None
     assert "--permission-prompts" not in command
 
 
-def test_installation_rejects_nonexact_visible_message() -> None:
+def test_installation_rejects_terminal_or_code_block_visible_message() -> None:
     profile = _profile()
     evidence = _evidence(
         ToolKind.MARKETPLACE_ADD,
         ToolKind.PLUGIN_INSTALL,
         ToolKind.LOGIN,
         ToolKind.NEW_CHAT_URI,
-        texts=(_text(), _text(expected=False)),
+        texts=(
+            _text(),
+            TextEvidence(
+                cyrillic_letters=12,
+                latin_letters=2,
+                contains_code_block=True,
+                contains_terminal_reference=False,
+            ),
+        ),
     )
-    with pytest.raises(ProductionE2EError, match="installation_messages_not_exact"):
+    with pytest.raises(
+        ProductionE2EError, match="installation_visible_message_contains_code_block"
+    ):
         _runner(profile, _Driver(evidence)).run()
+
+    terminal = replace(
+        evidence,
+        text_messages=(
+            _text(),
+            TextEvidence(
+                cyrillic_letters=12,
+                latin_letters=2,
+                contains_code_block=False,
+                contains_terminal_reference=True,
+            ),
+        ),
+    )
+    with pytest.raises(
+        ProductionE2EError, match="installation_visible_message_mentions_terminal"
+    ):
+        _runner(profile, _Driver(terminal)).run()
 
 
 @pytest.mark.parametrize(
@@ -454,6 +505,29 @@ def test_permission_policy_allows_only_public_raw_repository_reads() -> None:
     assert policy.decide("Read", {"file_path": "/etc/passwd"}).decision is PermissionDecision.DENY
 
 
+def test_compound_public_metadata_read_has_its_own_denied_category() -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
+    first = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/.claude-plugin/marketplace.json"
+    second = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/plugins/sensai/.mcp.json"
+    command = f'echo "=== first ==="; curl -fsSL {first}; echo; curl -fsSL {second}'
+
+    decision = policy.decide("Bash", {"command": command})
+
+    assert decision.decision is PermissionDecision.DENY
+    assert decision.intent is ToolKind.PUBLIC_METADATA_COMPOUND_BASH
+
+    evidence = replace(
+        _successful_driver().evidence,
+        denied_tool_intents=(ToolKind.PUBLIC_METADATA_COMPOUND_BASH,),
+    )
+    with pytest.raises(
+        ProductionE2EError,
+        match="installation_permission_denied_public_metadata_compound_bash",
+    ):
+        ProductionSensaiE2E._require_installation(evidence)
+
+
 def test_first_comparison_allows_only_the_public_readme_fetch() -> None:
     actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
     policy = InstallationPermissionPolicy(
@@ -548,6 +622,46 @@ def test_parser_handles_empty_initial_tool_input_and_partial_json() -> None:
         "user",
         "result",
     )
+
+
+def test_parser_keeps_only_code_and_terminal_message_categories() -> None:
+    evidence = _parse(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text"},
+                },
+            },
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"text": "Откройте ```тер"},
+                },
+            },
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"text": "минал```"},
+                },
+            },
+            {"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}},
+            {"type": "result"},
+        ]
+    )
+
+    assert len(evidence.text_messages) == 1
+    text = evidence.text_messages[0]
+    assert text.contains_code_block
+    assert text.contains_terminal_reference
+    assert "Откройте" not in str(evidence)
 
 
 def test_parser_keeps_terminal_nonzero_unclosed_and_limit_categories_distinct(
@@ -783,11 +897,42 @@ def test_unknown_terminal_reason_is_other_without_reading_terminal_text() -> Non
 
 def test_public_plugin_inventory_requires_exact_enabled_public_plugin() -> None:
     assert _is_exact_public_sensai_inventory(
-        [{"id": "sensai@sensai", "scope": "user", "enabled": True}]
+        [
+            {
+                "id": "sensai@sensai",
+                "scope": "user",
+                "enabled": True,
+                "mcpServers": {
+                    "sensai": {"type": "http", "url": "https://black-vector.com/sensai/mcp"}
+                },
+            }
+        ]
     )
     assert not _is_exact_public_sensai_inventory(
-        [{"id": "sensai@sensai", "scope": "project", "enabled": True}]
+        [
+            {
+                "id": "sensai@sensai",
+                "scope": "project",
+                "enabled": True,
+                "mcpServers": {
+                    "sensai": {"type": "http", "url": "https://black-vector.com/sensai/mcp"}
+                },
+            }
+        ]
     )
+
+
+def test_mcp_status_requires_one_exact_sensai_url() -> None:
+    status = (
+        "plugin:sensai:sensai:\n"
+        "Type: http\n"
+        "URL: https://black-vector.com/sensai/mcp\n"
+    )
+    assert _is_exact_public_sensai_mcp_status(status)
+    assert not _is_exact_public_sensai_mcp_status(
+        status.replace("/mcp", "/mcp/other")
+    )
+    assert not _is_exact_public_sensai_mcp_status(status + "URL: https://black-vector.com/sensai/mcp\n")
 
 
 class _Response:

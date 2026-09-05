@@ -54,15 +54,46 @@ _PUBLIC_RAW_HOST = "raw.githubusercontent.com"
 _PUBLIC_RAW_PREFIX = "/blackvctr/sensai-plugin/main/"
 _OAUTH_ENTRY_HOSTS = frozenset({"black-vector.com", "accounts.google.com"})
 _BROWSER_TOOL = Path("/mnt/c/gdrive/dev/.skills/use-windows-firefox/scripts/browser_tool_pw.py")
+_SENSAI_PLUGIN_SELECTOR = "sensai@sensai"
+_SENSAI_MCP_NAME = "plugin:sensai:sensai"
+_SENSAI_MCP_URL = "https://black-vector.com/sensai/mcp"
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
 _LATIN = re.compile(r"[A-Za-z]")
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_TERMINAL_REFERENCE = re.compile(r"(?:\bterminal\b|\b(?:bash|shell)\b|терминал)", re.IGNORECASE)
 
 
 class ProductionE2EError(RuntimeError):
     """One safe category explaining an installation acceptance failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class InstallationScenario:
+    """Fixed local acceptance boundary, never content supplied to Claude.
+
+    The public README is an object Claude may read.  It must not also become
+    the source of truth for what this test permits or expects: changing a
+    candidate README must not silently widen the test's authority.
+    """
+
+    prompt: str
+    plugin_selector: str
+    mcp_name: str
+    mcp_url: str
+    new_chat_uri: str
+    claude_linux_actions: tuple[tuple[str, ...], ...]
+
+
+INSTALLATION_SCENARIO = InstallationScenario(
+    prompt=PUBLIC_INSTALL_PROMPT,
+    plugin_selector=_SENSAI_PLUGIN_SELECTOR,
+    mcp_name=_SENSAI_MCP_NAME,
+    mcp_url=_SENSAI_MCP_URL,
+    new_chat_uri=CLAUDE_LINUX_ACTIONS[-1][1][1],
+    claude_linux_actions=tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS),
+)
 
 
 def _validate_expected_readme_sha256(value: str) -> str:
@@ -157,6 +188,7 @@ class ToolKind(StrEnum):
     PUBLIC_README_FETCH = "public_readme_fetch"
     PUBLIC_METADATA_FETCH = "public_metadata_fetch"
     PUBLIC_METADATA_BASH = "public_metadata_bash"
+    PUBLIC_METADATA_COMPOUND_BASH = "public_metadata_compound_bash"
     FORBIDDEN_BROWSER_MODE = "forbidden_browser_mode"
     OTHER = "other"
 
@@ -218,9 +250,10 @@ class ExitStage(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TextEvidence:
-    matches_expected: bool
     cyrillic_letters: int
     latin_letters: int
+    contains_code_block: bool
+    contains_terminal_reference: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +380,9 @@ class _TextAccumulator:
     digest: _Digest
     cyrillic_letters: int = 0
     latin_letters: int = 0
+    contains_code_block: bool = False
+    contains_terminal_reference: bool = False
+    _suffix: str = ""
 
     @classmethod
     def new(cls) -> _TextAccumulator:
@@ -356,10 +392,26 @@ class _TextAccumulator:
         self.digest.update(text.encode("utf-8"))
         self.cyrillic_letters += len(_CYRILLIC.findall(text))
         self.latin_letters += len(_LATIN.findall(text))
+        joined = self._suffix + text
+        self.contains_code_block = self.contains_code_block or "```" in joined
+        self.contains_terminal_reference = (
+            self.contains_terminal_reference or _TERMINAL_REFERENCE.search(joined) is not None
+        )
+        # This is transient parser state, not recorded E2E evidence.
+        self._suffix = joined[-16:]
 
-    def matches(self, expected: str) -> bool:
-        expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
-        return self.digest.digest() == expected_digest
+    def evidence(self) -> TextEvidence:
+        """Return only acceptance properties; never retain the visible text."""
+
+        # This test accepts messages, not Markdown instructions or a request
+        # that the person use a shell.  The text itself is intentionally not
+        # written to a receipt.
+        return TextEvidence(
+            cyrillic_letters=self.cyrillic_letters,
+            latin_letters=self.latin_letters,
+            contains_code_block=self.contains_code_block,
+            contains_terminal_reference=self.contains_terminal_reference,
+        )
 
 
 def _classify_first_text(text: str) -> FirstTextKind:
@@ -527,6 +579,35 @@ def _is_direct_public_curl(command: object) -> bool:
     return _is_public_raw_url(tokens[-1])
 
 
+def _is_public_metadata_compound_bash(command: object) -> bool:
+    """Recognize, but never permit, a compound public-metadata read.
+
+    Claude previously proposed a shell sequence containing only ``echo`` and
+    direct public ``curl`` calls.  It is not a model refusal, but this runner
+    intentionally permits only one direct metadata read at a time.  Keeping a
+    separate closed category prevents that policy boundary from masquerading
+    as an unexplained installation failure.
+    """
+
+    if not isinstance(command, str) or ";" not in command:
+        return False
+    has_public_curl = False
+    for part in command.split(";"):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        if _is_direct_public_curl(stripped):
+            has_public_curl = True
+            continue
+        try:
+            tokens = shlex.split(stripped, posix=True)
+        except ValueError:
+            return False
+        if not tokens or tokens[0] != "echo":
+            return False
+    return has_public_curl
+
+
 @dataclass(frozen=True, slots=True)
 class InstallationPermission:
     """A redacted decision for one permission request from Claude."""
@@ -580,6 +661,8 @@ class InstallationPermissionPolicy:
         command = tool_input.get("command")
         if _is_direct_public_curl(command):
             return ToolKind.PUBLIC_METADATA_BASH
+        if _is_public_metadata_compound_bash(command):
+            return ToolKind.PUBLIC_METADATA_COMPOUND_BASH
         argv = _bash_action_argv(command)
         if argv is None:
             return ToolKind.OTHER
@@ -601,6 +684,8 @@ class InstallationPermissionPolicy:
             if self._first_comparison:
                 return InstallationPermission(PermissionDecision.DENY, intent)
             return InstallationPermission(PermissionDecision.ALLOW, intent)
+        if intent is ToolKind.PUBLIC_METADATA_COMPOUND_BASH:
+            return InstallationPermission(PermissionDecision.DENY, intent)
         argv = _bash_action_argv(command)
         kind = self._actions.get(argv, ToolKind.OTHER) if argv is not None else ToolKind.OTHER
         if kind is ToolKind.LOGIN:
@@ -684,6 +769,10 @@ def _consume_stream(
     expected_session: uuid.UUID,
     expected_new_chat_uri: str | None,
 ) -> AgentEvidence:
+    # Kept in the driver protocol for compatibility with transcript-only
+    # callers.  The production acceptance does not compare prose to values
+    # supplied by a README parser.
+    del expected_visible_messages
     if process.stdout is None:
         raise ProductionE2EError("claude_stream_unavailable")
     descriptor = process.stdout.fileno()
@@ -822,19 +911,7 @@ def _consume_stream(
                 return
             text = text_blocks.pop(index, None)
             if text is not None:
-                position = len(texts)
-                expected = (
-                    expected_visible_messages[position]
-                    if position < len(expected_visible_messages)
-                    else None
-                )
-                texts.append(
-                    TextEvidence(
-                        matches_expected=expected is not None and text.matches(expected),
-                        cyrillic_letters=text.cyrillic_letters,
-                        latin_letters=text.latin_letters,
-                    )
-                )
+                texts.append(text.evidence())
                 order.append("visible")
             tool = tool_blocks.pop(index, None)
             if tool is not None:
@@ -992,12 +1069,7 @@ class SubprocessClaudeDriver:
             status = completed.stdout.decode("utf-8", errors="strict")
         except UnicodeDecodeError:
             return False
-        return (
-            "plugin:sensai:sensai" in status
-            and "Type:" in status
-            and "URL:" in status
-            and _STATUS_FAILURE.search(status) is None
-        )
+        return _is_exact_public_sensai_mcp_status(status)
 
     def claude_authenticated(
         self,
@@ -1209,6 +1281,9 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         expected_session: uuid.UUID,
         expected_new_chat_uri: str,
     ) -> AgentEvidence:
+        # The caller's scenario is an acceptance boundary.  It is deliberately
+        # not copied into Claude's prompt or compared as generated prose.
+        del expected_visible_messages
         try:
             from claude_agent_sdk import (
                 AssistantMessage,
@@ -1228,7 +1303,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
 
         policy = InstallationPermissionPolicy(
             new_chat_uri=expected_new_chat_uri,
-            claude_linux_actions=tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS),
+            claude_linux_actions=INSTALLATION_SCENARIO.claude_linux_actions,
             first_comparison=self._first_comparison,
         )
         handoff = (
@@ -1329,18 +1404,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                                     first_text_kind = _classify_first_text(block.text)
                                 accumulator = _TextAccumulator.new()
                                 accumulator.add(block.text)
-                                expected = (
-                                    expected_visible_messages[len(text_blocks)]
-                                    if len(text_blocks) < len(expected_visible_messages)
-                                    else None
-                                )
-                                text_blocks.append(
-                                    TextEvidence(
-                                        expected is not None and accumulator.matches(expected),
-                                        accumulator.cyrillic_letters,
-                                        accumulator.latin_letters,
-                                    )
-                                )
+                                text_blocks.append(accumulator.evidence())
                                 event_order.append("visible")
                             elif isinstance(block, ToolUseBlock):
                                 # The callback above is the only source of an allowed action.
@@ -1427,10 +1491,32 @@ def _is_exact_public_sensai_inventory(entries: object) -> bool:
     sensai = [item for item in entries if str(item.get("id", "")).startswith("sensai@")]
     return (
         len(sensai) == 1
-        and sensai[0].get("id") == "sensai@sensai"
+        and sensai[0].get("id") == INSTALLATION_SCENARIO.plugin_selector
         and sensai[0].get("scope") == "user"
         and sensai[0].get("enabled") is True
+        and sensai[0].get("mcpServers")
+        == {"sensai": {"type": "http", "url": INSTALLATION_SCENARIO.mcp_url}}
     )
+
+
+def _is_exact_public_sensai_mcp_status(status: str) -> bool:
+    """Accept only one exact configured public Sensai MCP endpoint."""
+
+    if _STATUS_FAILURE.search(status) is not None:
+        return False
+    lines = [line.strip() for line in status.splitlines() if line.strip()]
+    if lines.count(f"{INSTALLATION_SCENARIO.mcp_name}:") != 1:
+        return False
+    fields: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.partition(":")
+        if separator != ":" or key not in {"Type", "URL"}:
+            continue
+        normalized = value.strip()
+        if not normalized or key in fields:
+            return False
+        fields[key] = normalized
+    return fields == {"Type": "http", "URL": INSTALLATION_SCENARIO.mcp_url}
 
 
 def _new_chat_bash_command(new_chat_uri: str) -> str:
@@ -1442,12 +1528,10 @@ def _agent_command(
     *,
     prompt: str,
     session: uuid.UUID,
-    claude_linux_actions: tuple[tuple[str, ...], ...],
 ) -> tuple[str, ...]:
     # This tuple is a closed description for injected unit drivers.  The
     # production path below uses the Agent SDK callback rather than handing the
     # CLI a string allowlist of shell spellings.
-    del claude_linux_actions
     command = (
         executable,
         "-p",
@@ -1489,7 +1573,6 @@ class ProductionSensaiE2E:
         profile: Path,
         expected_public_readme_sha256: str,
         driver: ClaudeDriver | None = None,
-        contract_loader: Callable[[], PublicReadmeContract] = load_local_installation_contract,
         public_readme_validator: Callable[[str], str] = fetch_public_readme_sha256,
         executable_resolver: Callable[[], str] = resolve_installed_wsl_claude,
         first_comparison: bool = False,
@@ -1500,12 +1583,11 @@ class ProductionSensaiE2E:
         )
         self._first_comparison = first_comparison
         self._driver = driver or SdkClaudeDriver(first_comparison=first_comparison)
-        self._contract_loader = contract_loader
         self._public_readme_validator = public_readme_validator
         self._executable_resolver = executable_resolver
 
     def run(self) -> ProductionE2EReport:
-        """Run the full published-v2 acceptance path.
+        """Run the full public-candidate acceptance path.
 
         The public page is checked as one exact candidate before execution.
         The prompt passed to Claude remains a fixed test input below.
@@ -1514,10 +1596,9 @@ class ProductionSensaiE2E:
         if self._first_comparison:
             raise ProductionE2EError("full_installation_not_available_in_first_comparison")
         self._public_readme_validator(self._expected_public_readme_sha256)
-        contract = self._contract_loader()
         executable = self._executable_resolver()
         with create_fresh_run(self._profile) as run:
-            return self._run_inside_fresh_profile(run, contract, executable, uuid.uuid4())
+            return self._run_inside_fresh_profile(run, executable, uuid.uuid4())
 
     def compare_first_response(self) -> FirstComparisonReport:
         """Observe the first public-README reaction before effects are allowed.
@@ -1530,7 +1611,6 @@ class ProductionSensaiE2E:
         if not self._first_comparison:
             raise ProductionE2EError("first_comparison_mode_required")
         digest = self._public_readme_validator(self._expected_public_readme_sha256)
-        contract = self._contract_loader()
         executable = self._executable_resolver()
         with create_fresh_run(self._profile) as run:
             if not self._driver.claude_authenticated(
@@ -1544,16 +1624,15 @@ class ProductionSensaiE2E:
             evidence = self._driver.run_agent(
                 _agent_command(
                     executable,
-                    prompt=PUBLIC_INSTALL_PROMPT,
+                    prompt=INSTALLATION_SCENARIO.prompt,
                     session=session,
-                    claude_linux_actions=contract.claude_linux_actions,
                 ),
                 cwd=run.work,
                 environment=run.environment,
                 timeout_seconds=INSTALL_TIMEOUT_SECONDS,
                 expected_visible_messages=(),
                 expected_session=session,
-                expected_new_chat_uri=contract.russian_new_chat_uri,
+                expected_new_chat_uri=INSTALLATION_SCENARIO.new_chat_uri,
             )
         if evidence.timed_out:
             raise ProductionE2EError("first_comparison_timed_out")
@@ -1567,7 +1646,7 @@ class ProductionSensaiE2E:
         )
 
     def _run_inside_fresh_profile(
-        self, run: ClaudeE2ERun, contract: PublicReadmeContract, executable: str, session: uuid.UUID
+        self, run: ClaudeE2ERun, executable: str, session: uuid.UUID
     ) -> ProductionE2EReport:
         if not self._driver.claude_authenticated(
             _auth_status_command(executable),
@@ -1576,21 +1655,17 @@ class ProductionSensaiE2E:
             timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
         ):
             raise ProductionE2EError("isolated_claude_auth_not_verified")
-        new_chat_uri = contract.russian_new_chat_uri
+        new_chat_uri = INSTALLATION_SCENARIO.new_chat_uri
         installation = self._driver.run_agent(
             _agent_command(
                 executable,
-                prompt=PUBLIC_INSTALL_PROMPT,
+                prompt=INSTALLATION_SCENARIO.prompt,
                 session=session,
-                claude_linux_actions=contract.claude_linux_actions,
             ),
             cwd=run.work,
             environment=run.environment,
             timeout_seconds=INSTALL_TIMEOUT_SECONDS,
-            expected_visible_messages=(
-                contract.russian_authorization_message,
-                contract.russian_ready_message,
-            ),
+            expected_visible_messages=(),
             expected_session=session,
             expected_new_chat_uri=new_chat_uri,
         )
@@ -1620,12 +1695,18 @@ class ProductionSensaiE2E:
             raise ProductionE2EError("installation_terminal_result_missing")
         if not evidence.session_verified:
             raise ProductionE2EError("installation_session_not_verified")
-        if len(evidence.text_messages) != 2 or not all(
-            item.matches_expected for item in evidence.text_messages
-        ):
-            raise ProductionE2EError("installation_messages_not_exact")
+        if len(evidence.text_messages) != 2:
+            raise ProductionE2EError("installation_visible_message_count_invalid")
         if any(item.cyrillic_letters <= item.latin_letters for item in evidence.text_messages):
             raise ProductionE2EError("installation_visible_message_not_russian")
+        if any(item.contains_code_block for item in evidence.text_messages):
+            raise ProductionE2EError("installation_visible_message_contains_code_block")
+        if any(item.contains_terminal_reference for item in evidence.text_messages):
+            raise ProductionE2EError("installation_visible_message_mentions_terminal")
+        if evidence.denied_tool_intents:
+            raise ProductionE2EError(
+                f"installation_permission_denied_{evidence.denied_tool_intents[0]}"
+            )
         for kind in (ToolKind.MARKETPLACE_ADD, ToolKind.PLUGIN_INSTALL, ToolKind.LOGIN):
             if not evidence.has_successful(kind):
                 raise ProductionE2EError(f"installation_{kind}_not_observed")
