@@ -35,6 +35,7 @@ from sensai_plugin.claude_production_e2e import (
     ProductionE2EReport,
     ProductionSensaiE2E,
     SdkClaudeDriver,
+    SdkCleanupKind,
     SdkExceptionKind,
     SdkResultKind,
     TerminalResultKind,
@@ -403,6 +404,18 @@ def test_pre_marketplace_receipt_distinguishes_closed_sdk_failures(
     assert receipt.stage is ExitStage.BEFORE_MARKETPLACE
 
 
+def test_pre_marketplace_receipt_uses_attempted_action_not_successful_result() -> None:
+    evidence = replace(
+        _evidence(),
+        returncode=1,
+        exit_stage=ExitStage.BEFORE_MARKETPLACE,
+        sdk_result_kind=SdkResultKind.ERROR,
+        tool_intents=(ToolKind.MARKETPLACE_ADD,),
+    )
+
+    assert _pre_marketplace_failure_receipt(evidence) is None
+
+
 def test_pre_marketplace_receipt_keeps_only_categories_when_exception_is_poisoned() -> None:
     poison = "oauth-token=private https://private.example/path -- command"
     evidence = replace(
@@ -453,7 +466,7 @@ def test_sdk_driver_records_poisoned_exception_as_a_closed_category(
             return None
 
         async def disconnect(self) -> None:
-            return None
+            raise OSError("private cleanup detail")
 
     class FakeHookMatcher:
         def __init__(self, **_kwargs: object) -> None:
@@ -494,10 +507,12 @@ def test_sdk_driver_records_poisoned_exception_as_a_closed_category(
 
     assert evidence.sdk_exception_kind is SdkExceptionKind.RUNTIME
     assert evidence.sdk_result_kind is SdkResultKind.NONE
+    assert evidence.sdk_cleanup_kind is SdkCleanupKind.DISCONNECT_FAILED
     assert evidence.returncode == 1
     receipt = _pre_marketplace_failure_receipt(evidence)
     assert receipt is not None
     assert receipt.kind is PreMarketplaceFailureKind.SDK_EXCEPTION
+    assert receipt.sdk_cleanup is SdkCleanupKind.DISCONNECT_FAILED
     assert poison not in receipt.machine_line()
     assert "private.example" not in receipt.machine_line()
 
@@ -1299,6 +1314,7 @@ def test_cli_emits_only_the_closed_early_failure_receipt(
         stage=ExitStage.BEFORE_MARKETPLACE,
         sdk_exception=SdkExceptionKind.RUNTIME,
         sdk_result=SdkResultKind.NONE,
+        sdk_cleanup=SdkCleanupKind.NONE,
         first_text=FirstTextKind.REFUSAL,
         first_tool_intent=ToolKind.PUBLIC_README_FETCH,
         first_denied_tool_intent=ToolKind.PUBLIC_METADATA_INVENTORY_BASH,

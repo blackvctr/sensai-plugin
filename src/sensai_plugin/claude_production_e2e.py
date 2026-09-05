@@ -273,6 +273,13 @@ class SdkResultKind(StrEnum):
     OTHER = "other"
 
 
+class SdkCleanupKind(StrEnum):
+    """Closed result of cleanup after a local SDK run."""
+
+    NONE = "none"
+    DISCONNECT_FAILED = "disconnect_failed"
+
+
 class PreMarketplaceFailureKind(StrEnum):
     """Why a full E2E ended before adding the public marketplace."""
 
@@ -295,6 +302,7 @@ class PreMarketplaceFailureReceipt:
     stage: ExitStage
     sdk_exception: SdkExceptionKind
     sdk_result: SdkResultKind
+    sdk_cleanup: SdkCleanupKind
     first_text: FirstTextKind
     first_tool_intent: ToolKind | None
     first_denied_tool_intent: ToolKind | None
@@ -307,7 +315,8 @@ class PreMarketplaceFailureReceipt:
         return (
             "before_marketplace="
             f"kind:{self.kind},stage:{self.stage},sdk_exception:{self.sdk_exception},"
-            f"sdk_result:{self.sdk_result},first_text:{self.first_text},"
+            f"sdk_result:{self.sdk_result},sdk_cleanup:{self.sdk_cleanup},"
+            f"first_text:{self.first_text},"
             f"first_tool:{first_tool},first_denied:{first_denied}"
         )
 
@@ -373,6 +382,7 @@ class AgentEvidence:
     first_text_kind: FirstTextKind = FirstTextKind.NONE
     sdk_exception_kind: SdkExceptionKind = SdkExceptionKind.NONE
     sdk_result_kind: SdkResultKind = SdkResultKind.NONE
+    sdk_cleanup_kind: SdkCleanupKind = SdkCleanupKind.NONE
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -549,7 +559,8 @@ def _pre_marketplace_failure_receipt(
 ) -> PreMarketplaceFailureReceipt | None:
     """Create a receipt only for a failed full run before marketplace add."""
 
-    if evidence.exit_stage is not ExitStage.BEFORE_MARKETPLACE:
+    attempted_stage = _exit_stage((*evidence.tool_intents, *evidence.tool_calls))
+    if attempted_stage is not ExitStage.BEFORE_MARKETPLACE:
         return None
     if evidence.timed_out:
         kind = PreMarketplaceFailureKind.TIMEOUT
@@ -568,9 +579,10 @@ def _pre_marketplace_failure_receipt(
         kind = PreMarketplaceFailureKind.COMPLETED_BEFORE_MARKETPLACE
     return PreMarketplaceFailureReceipt(
         kind=kind,
-        stage=evidence.exit_stage,
+        stage=attempted_stage,
         sdk_exception=evidence.sdk_exception_kind,
         sdk_result=evidence.sdk_result_kind,
+        sdk_cleanup=evidence.sdk_cleanup_kind,
         first_text=evidence.first_text_kind,
         first_tool_intent=evidence.tool_intents[0] if evidence.tool_intents else None,
         first_denied_tool_intent=(
@@ -1499,6 +1511,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         first_text_kind = FirstTextKind.NONE
         sdk_exception_kind = SdkExceptionKind.NONE
         sdk_result_kind = SdkResultKind.NONE
+        sdk_cleanup_kind = SdkCleanupKind.NONE
 
         async def force_permission(
             _hook_input: Any, tool_use_id: str | None, _hook_context: Any
@@ -1609,17 +1622,14 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
             if timed_out:
                 with suppress(Exception):
                     await client.interrupt()
-            disconnect_failed = False
             try:
                 await client.disconnect()
             except Exception:
-                disconnect_failed = True
+                sdk_cleanup_kind = SdkCleanupKind.DISCONNECT_FAILED
             else:
                 disconnected = True
             browser_cleaned = handoff is None or handoff.cleanup()
             child_absent = _owned_run_child_absent(cwd.parent)
-            if disconnect_failed:
-                raise ProductionE2EError("claude_sdk_cleanup_failed")
             if not child_absent:
                 raise ProductionE2EError("claude_sdk_child_remained")
             if not browser_cleaned:
@@ -1659,6 +1669,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
             first_text_kind=first_text_kind,
             sdk_exception_kind=sdk_exception_kind,
             sdk_result_kind=sdk_result_kind,
+            sdk_cleanup_kind=sdk_cleanup_kind,
         )
 
 
