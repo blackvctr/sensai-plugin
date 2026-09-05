@@ -46,6 +46,7 @@ PROCESS_TERMINATION_GRACE_SECONDS = 3
 MAX_STREAM_LINE_BYTES = 256 * 1024
 MAX_STREAM_EVENTS = 128
 MAX_STREAM_BYTES = 2 * 1024 * 1024
+MAX_STDERR_BYTES = 256 * 1024
 MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
@@ -117,6 +118,13 @@ class ExitCategory(StrEnum):
     NONZERO_UNCLASSIFIED = "nonzero_unclassified"
 
 
+class StreamLimitReason(StrEnum):
+    EVENT_COUNT = "event_count"
+    STDOUT_BYTES = "stdout_bytes"
+    LINE_BYTES = "line_bytes"
+    STDERR_BYTES = "stderr_bytes"
+
+
 class TerminalResultKind(StrEnum):
     NONE = "none"
     SUCCESS = "success"
@@ -178,6 +186,11 @@ class AgentEvidence:
     terminal_result_kind: TerminalResultKind
     terminal_error_count: int
     stderr_seen: bool
+    stream_limit_reason: StreamLimitReason | None = None
+    stream_event_count: int = 0
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    record_kind_counts: tuple[tuple[str, int], ...] = ()
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -386,10 +399,12 @@ def _consume_stream(
     deadline = time.monotonic() + timeout_seconds
     pending = bytearray()
     total_bytes = 0
+    stderr_bytes = 0
     event_count = 0
     malformed = False
     unclosed_block = False
     stream_limit_exceeded = False
+    stream_limit_reason: StreamLimitReason | None = None
     timed_out = False
     result_seen = False
     session_verified = False
@@ -405,6 +420,13 @@ def _consume_stream(
     results: list[ToolResultEvidence] = []
     order: list[str] = []
     record_kinds: list[str] = []
+    record_kind_counts: dict[str, int] = {}
+
+    def set_stream_limit(reason: StreamLimitReason) -> None:
+        nonlocal stream_limit_exceeded, stream_limit_reason
+        if stream_limit_reason is None:
+            stream_limit_exceeded = True
+            stream_limit_reason = reason
 
     def record_kind(record: object) -> str:
         if not isinstance(record, dict):
@@ -432,14 +454,16 @@ def _consume_stream(
             return
         event_count += 1
         if event_count > MAX_STREAM_EVENTS:
-            stream_limit_exceeded = True
+            set_stream_limit(StreamLimitReason.EVENT_COUNT)
             return
         try:
             record = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             malformed = True
             return
-        record_kinds.append(record_kind(record))
+        kind_name = record_kind(record)
+        record_kinds.append(kind_name)
+        record_kind_counts[kind_name] = record_kind_counts.get(kind_name, 0) + 1
         if _verify_session(record, expected_session):
             session_verified = True
         if isinstance(record, dict) and record.get("type") == "result":
@@ -546,13 +570,16 @@ def _consume_stream(
                     outstanding[tool.result_key] = kind
 
     try:
-        while process.poll() is None or pending:
+        while process.poll() is None or pending or selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 break
-            ready = selector.select(0 if process.poll() is not None else remaining)
+            running = process.poll() is None
+            ready = selector.select(remaining if running else 0)
             if not ready:
+                if not running:
+                    break
                 continue
             key, _ = ready[0]
             try:
@@ -562,28 +589,37 @@ def _consume_stream(
             if key.data == "stderr":
                 if chunk:
                     stderr_seen = True
+                    stderr_bytes += len(chunk)
+                    if stderr_bytes > MAX_STDERR_BYTES:
+                        set_stream_limit(StreamLimitReason.STDERR_BYTES)
                 else:
                     selector.unregister(key.fileobj)
+                if stream_limit_reason is not None:
+                    break
                 continue
             if not chunk:
                 if pending:
                     malformed = True
-                break
+                selector.unregister(key.fileobj)
+                continue
             total_bytes += len(chunk)
             if total_bytes > MAX_STREAM_BYTES:
-                stream_limit_exceeded = True
+                set_stream_limit(StreamLimitReason.STDOUT_BYTES)
                 break
             pending.extend(chunk)
             if len(pending) > MAX_STREAM_LINE_BYTES and b"\n" not in pending:
-                malformed = True
+                set_stream_limit(StreamLimitReason.LINE_BYTES)
                 break
             while b"\n" in pending:
                 line, _, rest = pending.partition(b"\n")
                 pending = bytearray(rest)
-                consume(bytes(line))
-                if malformed:
+                if len(line) > MAX_STREAM_LINE_BYTES:
+                    set_stream_limit(StreamLimitReason.LINE_BYTES)
                     break
-            if malformed:
+                consume(bytes(line))
+                if malformed or stream_limit_reason is not None:
+                    break
+            if malformed or stream_limit_reason is not None:
                 break
     finally:
         selector.close()
@@ -619,6 +655,11 @@ def _consume_stream(
         terminal_result_kind=terminal_result_kind,
         terminal_error_count=terminal_error_count,
         stderr_seen=stderr_seen,
+        stream_limit_reason=stream_limit_reason,
+        stream_event_count=event_count,
+        stdout_bytes=total_bytes,
+        stderr_bytes=stderr_bytes,
+        record_kind_counts=tuple(sorted(record_kind_counts.items())),
     )
 
 
@@ -884,8 +925,10 @@ class ProductionSensaiE2E:
     def _require_installation(evidence: AgentEvidence) -> None:
         if evidence.timed_out:
             raise ProductionE2EError("installation_timed_out")
+        if evidence.stream_limit_reason is not None:
+            raise ProductionE2EError(f"installation_stream_limit_{evidence.stream_limit_reason}")
         if evidence.stream_limit_exceeded:
-            raise ProductionE2EError("installation_stream_limit_exceeded")
+            raise ProductionE2EError("installation_stream_limit_unknown")
         if evidence.malformed:
             raise ProductionE2EError("installation_stream_malformed")
         if evidence.unclosed_block:

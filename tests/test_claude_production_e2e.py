@@ -20,6 +20,7 @@ from sensai_plugin.claude_production_e2e import (
     ProductionE2EError,
     ProductionE2EReport,
     ProductionSensaiE2E,
+    StreamLimitReason,
     TerminalResultKind,
     TextEvidence,
     ToolKind,
@@ -227,11 +228,23 @@ def _runner(profile: Path, driver: ClaudeDriver) -> ProductionSensaiE2E:
 
 
 class _StreamProcess:
-    def __init__(self, payload: bytes, *, returncode: int = 0) -> None:
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        stderr_payload: bytes | None = None,
+        returncode: int = 0,
+    ) -> None:
         read_fd, write_fd = os.pipe()
         os.write(write_fd, payload)
         os.close(write_fd)
         self.stdout = os.fdopen(read_fd, "rb")
+        self.stderr = None
+        if stderr_payload is not None:
+            stderr_read_fd, stderr_write_fd = os.pipe()
+            os.write(stderr_write_fd, stderr_payload)
+            os.close(stderr_write_fd)
+            self.stderr = os.fdopen(stderr_read_fd, "rb")
         self.returncode = returncode
         self.pid = os.getpid()
         self._first_poll = True
@@ -590,8 +603,78 @@ def test_parser_keeps_terminal_nonzero_unclosed_and_limit_categories_distinct(
         ProductionSensaiE2E._require_installation(nonzero)
     with pytest.raises(ProductionE2EError, match="installation_stream_unclosed_block"):
         ProductionSensaiE2E._require_installation(unclosed)
-    with pytest.raises(ProductionE2EError, match="installation_stream_limit_exceeded"):
+    with pytest.raises(ProductionE2EError, match="installation_stream_limit_event_count"):
         ProductionSensaiE2E._require_installation(limited)
+
+
+def test_parser_reports_fixed_reason_and_stops_at_the_first_stream_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sensai_plugin.claude_production_e2e as module
+
+    monkeypatch.setattr(module, "MAX_STREAM_EVENTS", 1)
+    event_limited = _parse([{"type": "system", "subtype": "init"}, {"type": "result"}])
+
+    monkeypatch.setattr(module, "MAX_STREAM_BYTES", 1)
+    stdout_limited = _parse_raw(b'{"type":"result"}\n')
+
+    monkeypatch.setattr(module, "MAX_STREAM_BYTES", 2 * 1024 * 1024)
+    monkeypatch.setattr(module, "MAX_STREAM_LINE_BYTES", 8)
+    line_limited = _parse_raw(b"123456789\n")
+
+    monkeypatch.setattr(module, "MAX_STDERR_BYTES", 1)
+    stderr_limited = _consume_stream(
+        _StreamProcess(b"{}\n", stderr_payload=b"private stderr"),  # type: ignore[arg-type]
+        timeout_seconds=1,
+        expected_session=uuid.uuid4(),
+        expected_new_chat_uri=None,
+    )
+
+    assert event_limited.stream_limit_reason is StreamLimitReason.EVENT_COUNT
+    assert event_limited.record_kinds == ("system",)
+    assert event_limited.record_kind_counts == (("system", 1),)
+    assert not event_limited.result_seen
+    assert stdout_limited.stream_limit_reason is StreamLimitReason.STDOUT_BYTES
+    assert line_limited.stream_limit_reason is StreamLimitReason.LINE_BYTES
+    assert stderr_limited.stream_limit_reason is StreamLimitReason.STDERR_BYTES
+    assert stderr_limited.stderr_bytes == 9
+    assert "private stderr" not in repr(stderr_limited)
+
+    for evidence, reason in (
+        (event_limited, StreamLimitReason.EVENT_COUNT),
+        (stdout_limited, StreamLimitReason.STDOUT_BYTES),
+        (line_limited, StreamLimitReason.LINE_BYTES),
+        (stderr_limited, StreamLimitReason.STDERR_BYTES),
+    ):
+        with pytest.raises(ProductionE2EError, match=f"installation_stream_limit_{reason}"):
+            ProductionSensaiE2E._require_installation(evidence)
+
+
+def test_first_stream_limit_terminates_without_parsing_later_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sensai_plugin.claude_production_e2e as module
+
+    class RunningStreamProcess(_StreamProcess):
+        def poll(self) -> None:
+            return None
+
+    process = RunningStreamProcess(b'{"type":"result"}\n')
+    terminated: list[object] = []
+    monkeypatch.setattr(module, "MAX_STREAM_BYTES", 1)
+    monkeypatch.setattr(module, "_terminate", terminated.append)
+
+    evidence = _consume_stream(
+        process,  # type: ignore[arg-type]
+        timeout_seconds=1,
+        expected_session=uuid.uuid4(),
+        expected_new_chat_uri=None,
+    )
+
+    assert terminated == [process]
+    assert evidence.stream_limit_reason is StreamLimitReason.STDOUT_BYTES
+    assert evidence.record_kinds == ()
+    assert not evidence.result_seen
 
 
 def test_parser_marks_invalid_json_and_invalid_block_stop_as_malformed() -> None:
@@ -859,3 +942,26 @@ def test_cli_accepts_only_the_installation_arguments(
     assert capsys.readouterr().out == "PRODUCTION_E2E_PASS installation=connected=new_chat\n"
     with pytest.raises(SystemExit):
         main(["--profile", str(tmp_path / "profile"), "--unrelated-option"])
+
+
+def test_cli_prints_only_fixed_stream_limit_phase(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    namespace = _script_namespace()
+
+    class Runner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def run(self) -> ProductionE2EReport:
+            raise ProductionE2EError("installation_stream_limit_stderr_bytes")
+
+    namespace["ProductionSensaiE2E"] = Runner
+    main = cast(Callable[[list[str]], int], namespace["main"])
+
+    with pytest.raises(SystemExit):
+        main(["--profile", str(tmp_path / "profile")])
+
+    assert capsys.readouterr().err == (
+        "PRODUCTION_E2E_FAILED phase=installation_stream_limit_stderr_bytes\n"
+    )
