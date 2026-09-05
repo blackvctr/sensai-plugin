@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import runpy
+import shlex
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -14,6 +15,7 @@ import pytest
 
 from sensai_plugin.claude_e2e_profile import provision_profile
 from sensai_plugin.claude_production_e2e import (
+    _KNOWN_PUBLIC_METADATA_INVENTORY_BASH,
     INSTALLATION_SCENARIO,
     PUBLIC_INSTALL_PROMPT,
     PUBLIC_README_URL,
@@ -528,6 +530,53 @@ def test_compound_public_metadata_read_has_its_own_denied_category() -> None:
         ProductionSensaiE2E._require_installation(evidence)
 
 
+def test_known_metadata_inventory_is_allowed_once_before_installation_only() -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
+    command = _KNOWN_PUBLIC_METADATA_INVENTORY_BASH
+
+    first = policy.decide("Bash", {"command": command})
+    second = policy.decide("Bash", {"command": command})
+
+    assert first.decision is PermissionDecision.ALLOW
+    assert first.intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
+    assert second.decision is PermissionDecision.DENY
+    assert second.intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
+
+
+@pytest.mark.parametrize("action", CLAUDE_LINUX_ACTIONS)
+def test_known_metadata_inventory_is_denied_after_any_install_action(
+    action: tuple[str, tuple[str, ...]],
+) -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
+    command = _KNOWN_PUBLIC_METADATA_INVENTORY_BASH
+
+    assert (
+        policy.decide("Bash", {"command": shlex.join(action[1])}).decision
+        is PermissionDecision.ALLOW
+    )
+    decision = policy.decide("Bash", {"command": command})
+
+    assert decision.decision is PermissionDecision.DENY
+    assert decision.intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
+
+
+@pytest.mark.parametrize("variation", [" ", "\n", "; true"])
+def test_known_metadata_inventory_rejects_every_byte_variation(variation: str) -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
+    command = _KNOWN_PUBLIC_METADATA_INVENTORY_BASH + variation
+
+    decision = policy.decide("Bash", {"command": command})
+
+    assert decision.decision is PermissionDecision.DENY
+    assert decision.intent in {
+        ToolKind.PUBLIC_METADATA_COMPOUND_BASH,
+        ToolKind.OTHER,
+    }
+
+
 def test_first_comparison_allows_only_the_public_readme_fetch() -> None:
     actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
     policy = InstallationPermissionPolicy(
@@ -552,6 +601,21 @@ def test_first_comparison_allows_only_the_public_readme_fetch() -> None:
     other = policy.decide("Bash", {"command": "id"})
     assert other.decision is PermissionDecision.DENY
     assert other.intent is ToolKind.OTHER
+
+
+def test_first_comparison_denies_known_metadata_inventory() -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(
+        new_chat_uri=actions[-1][1],
+        claude_linux_actions=actions,
+        first_comparison=True,
+    )
+    command = _KNOWN_PUBLIC_METADATA_INVENTORY_BASH
+
+    decision = policy.decide("Bash", {"command": command})
+
+    assert decision.decision is PermissionDecision.DENY
+    assert decision.intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
 
 
 def test_oauth_entry_url_allows_only_sensai_or_google_without_credentials() -> None:

@@ -57,6 +57,17 @@ _BROWSER_TOOL = Path("/mnt/c/gdrive/dev/.skills/use-windows-firefox/scripts/brow
 _SENSAI_PLUGIN_SELECTOR = "sensai@sensai"
 _SENSAI_MCP_NAME = "plugin:sensai:sensai"
 _SENSAI_MCP_URL = "https://black-vector.com/sensai/mcp"
+_KNOWN_PUBLIC_METADATA_INVENTORY_BASH = (
+    'echo "=== marketplace.json ==="; '
+    "curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+    ".claude-plugin/marketplace.json; echo; "
+    'echo "=== plugin.json ==="; '
+    "curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+    "plugins/sensai/.claude-plugin/plugin.json; echo; "
+    'echo "=== .mcp.json ==="; '
+    "curl -fsSL https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
+    "plugins/sensai/.mcp.json"
+)
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
@@ -188,6 +199,7 @@ class ToolKind(StrEnum):
     PUBLIC_README_FETCH = "public_readme_fetch"
     PUBLIC_METADATA_FETCH = "public_metadata_fetch"
     PUBLIC_METADATA_BASH = "public_metadata_bash"
+    PUBLIC_METADATA_INVENTORY_BASH = "public_metadata_inventory_bash"
     PUBLIC_METADATA_COMPOUND_BASH = "public_metadata_compound_bash"
     FORBIDDEN_BROWSER_MODE = "forbidden_browser_mode"
     OTHER = "other"
@@ -608,6 +620,18 @@ def _is_public_metadata_compound_bash(command: object) -> bool:
     return has_public_curl
 
 
+def _is_known_public_metadata_inventory_bash(command: object) -> bool:
+    """Match one previously observed read-only inventory byte for byte.
+
+    This is intentionally not shell parsing or command normalization.  The
+    acceptance may permit precisely this known public inventory once; a space,
+    reordered URL, added command, or any other spelling is another command and
+    remains denied.
+    """
+
+    return isinstance(command, str) and command == _KNOWN_PUBLIC_METADATA_INVENTORY_BASH
+
+
 @dataclass(frozen=True, slots=True)
 class InstallationPermission:
     """A redacted decision for one permission request from Claude."""
@@ -618,7 +642,7 @@ class InstallationPermission:
 
 
 class InstallationPermissionPolicy:
-    """Permit public reads and the four published installation effects only."""
+    """Permit public reads, one observed inventory, and four installation effects."""
 
     def __init__(
         self,
@@ -629,6 +653,8 @@ class InstallationPermissionPolicy:
     ) -> None:
         self._first_comparison = first_comparison
         self._new_chat_uri = new_chat_uri
+        self._known_metadata_inventory_seen = False
+        self._install_action_seen = False
         if len(claude_linux_actions) != 4:
             raise ValueError("installation action manifest is invalid")
         action_kinds = (
@@ -661,6 +687,8 @@ class InstallationPermissionPolicy:
         command = tool_input.get("command")
         if _is_direct_public_curl(command):
             return ToolKind.PUBLIC_METADATA_BASH
+        if _is_known_public_metadata_inventory_bash(command):
+            return ToolKind.PUBLIC_METADATA_INVENTORY_BASH
         if _is_public_metadata_compound_bash(command):
             return ToolKind.PUBLIC_METADATA_COMPOUND_BASH
         argv = _bash_action_argv(command)
@@ -684,6 +712,15 @@ class InstallationPermissionPolicy:
             if self._first_comparison:
                 return InstallationPermission(PermissionDecision.DENY, intent)
             return InstallationPermission(PermissionDecision.ALLOW, intent)
+        if intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH:
+            if (
+                self._first_comparison
+                or self._known_metadata_inventory_seen
+                or self._install_action_seen
+            ):
+                return InstallationPermission(PermissionDecision.DENY, intent)
+            self._known_metadata_inventory_seen = True
+            return InstallationPermission(PermissionDecision.ALLOW, intent)
         if intent is ToolKind.PUBLIC_METADATA_COMPOUND_BASH:
             return InstallationPermission(PermissionDecision.DENY, intent)
         argv = _bash_action_argv(command)
@@ -705,6 +742,7 @@ class InstallationPermissionPolicy:
             ToolKind.LOGIN,
             ToolKind.NEW_CHAT_URI,
         }:
+            self._install_action_seen = True
             return InstallationPermission(PermissionDecision.ALLOW, intent, kind)
         return InstallationPermission(PermissionDecision.DENY, intent)
 
