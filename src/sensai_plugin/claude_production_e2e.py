@@ -7,6 +7,7 @@ internals.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -23,11 +25,13 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
 from sensai_plugin.installation_e2e_contract import (
+    CLAUDE_LINUX_ACTIONS,
     CLAUDE_SONNET_5_MODEL,
     PublicReadmeContract,
     _public_contract_from_markdown,
@@ -43,6 +47,12 @@ MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
 _E2E_WEBFETCH_PERMISSION = "WebFetch(domain:raw.githubusercontent.com)"
+_PUBLIC_RAW_HOST = "raw.githubusercontent.com"
+_PUBLIC_RAW_PREFIX = "/blackvctr/sensai-plugin/main/"
+_OAUTH_ENTRY_HOSTS = frozenset({"black-vector.com", "accounts.google.com"})
+_BROWSER_TOOL = Path(
+    "/mnt/c/gdrive/dev/.skills/use-windows-firefox/scripts/browser_tool_pw.py"
+)
 
 _STATUS_FAILURE = re.compile(r"needs authentication|disconnected|\berror\b", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
@@ -102,6 +112,13 @@ class ToolKind(StrEnum):
     NEW_CHAT_URI = "new_chat_uri"
     FORBIDDEN_BROWSER_MODE = "forbidden_browser_mode"
     OTHER = "other"
+
+
+class PermissionDecision(StrEnum):
+    """One closed result from the installation permission boundary."""
+
+    ALLOW = "allow"
+    DENY = "deny"
 
 
 class ExitCategory(StrEnum):
@@ -176,6 +193,8 @@ class AgentEvidence:
     terminal_result_kind: TerminalResultKind
     terminal_error_count: int
     stderr_seen: bool
+    sensai_connection_verified: bool = False
+    public_sensai_plugin_installed: bool = False
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -315,30 +334,192 @@ def _assert_normal_browser_path(command: Sequence[str]) -> None:
         raise ProductionE2EError("normal_login_path_required")
 
 
-def _classify_bash_command(command: str, expected_new_chat_uri: str | None) -> ToolKind:
+def _bash_action_argv(command: object) -> tuple[str, ...] | None:
+    """Normalize shell quoting while rejecting wrappers and command chaining."""
+
+    if not isinstance(command, str):
+        return None
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError:
+        return None
+    if len(tokens) == 5 and tokens[:3] == ["script", "-q", "-c"] and tokens[4] == "/dev/null":
+        try:
+            tokens = shlex.split(tokens[3], posix=True)
+        except ValueError:
+            return None
+    return tuple(tokens)
+
+
+def _classify_bash_command(command: str, expected_new_chat_uri: str | None) -> ToolKind:
+    tokens = _bash_action_argv(command)
+    if tokens is None:
         return ToolKind.OTHER
     if "--no-browser" in tokens:
         return ToolKind.FORBIDDEN_BROWSER_MODE
-    if expected_new_chat_uri is not None and command == _new_chat_bash_command(expected_new_chat_uri):
+    if expected_new_chat_uri is not None and tokens == ("xdg-open", expected_new_chat_uri):
         return ToolKind.NEW_CHAT_URI
-    if tokens and tokens[0] == "script" and "-c" in tokens:
-        position = tokens.index("-c") + 1
-        if position >= len(tokens):
-            return ToolKind.OTHER
-        try:
-            tokens = shlex.split(tokens[position], posix=True)
-        except ValueError:
-            return ToolKind.OTHER
-    if tokens == ["claude", "mcp", "login", "plugin:sensai:sensai"]:
+    if tokens == ("claude", "mcp", "login", "plugin:sensai:sensai"):
         return ToolKind.LOGIN
-    if tokens == ["claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]:
+    if tokens == ("claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"):
         return ToolKind.MARKETPLACE_ADD
-    if tokens == ["claude", "plugin", "install", "sensai@sensai", "--scope", "user"]:
+    if tokens == ("claude", "plugin", "install", "sensai@sensai", "--scope", "user"):
         return ToolKind.PLUGIN_INSTALL
     return ToolKind.OTHER
+
+
+def _is_public_raw_url(value: object) -> bool:
+    """Accept a read-only URL from the public repository, without query data."""
+
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 4096:
+        return False
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == _PUBLIC_RAW_HOST
+        and parsed.path.startswith(_PUBLIC_RAW_PREFIX)
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def _is_allowed_oauth_entry_url(value: object) -> bool:
+    """The browser may follow redirects, but its first opened URL is fixed."""
+
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 16 * 1024:
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in _OAUTH_ENTRY_HOSTS
+        or port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return False
+    if parsed.hostname == "black-vector.com":
+        return parsed.path.startswith("/sensai")
+    return (
+        parsed.hostname == "accounts.google.com"
+    )
+
+
+def _is_direct_public_curl(command: object) -> bool:
+    """Allow only a direct, read-only curl of one public repository URL."""
+
+    if not isinstance(command, str):
+        return False
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if not tokens or tokens[0] != "curl":
+        return False
+    options = {
+        "-s",
+        "-S",
+        "-L",
+        "-f",
+        "-fsSL",
+        "-fsS",
+        "-sSL",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--fail",
+    }
+    if len(tokens) < 2 or any(token not in options for token in tokens[1:-1]):
+        return False
+    return _is_public_raw_url(tokens[-1])
+
+
+@dataclass(frozen=True, slots=True)
+class InstallationPermission:
+    """A redacted decision for one permission request from Claude."""
+
+    decision: PermissionDecision
+    action: ToolKind | None = None
+
+
+class InstallationPermissionPolicy:
+    """Permit public reads and the four published installation effects only."""
+
+    def __init__(
+        self,
+        *,
+        new_chat_uri: str,
+        claude_linux_actions: tuple[tuple[str, ...], ...],
+    ) -> None:
+        self._new_chat_uri = new_chat_uri
+        if len(claude_linux_actions) != 4:
+            raise ValueError("installation action manifest is invalid")
+        action_kinds = (
+            ToolKind.MARKETPLACE_ADD,
+            ToolKind.PLUGIN_INSTALL,
+            ToolKind.LOGIN,
+            ToolKind.NEW_CHAT_URI,
+        )
+        self._login_wrapper = claude_linux_actions[2]
+        normalized: dict[tuple[str, ...], ToolKind] = {}
+        for action, kind in zip(claude_linux_actions, action_kinds, strict=True):
+            shell_action = shlex.join(action)
+            argv = _bash_action_argv(shell_action)
+            if argv is None or argv in normalized:
+                raise ValueError("installation action manifest is invalid")
+            normalized[argv] = kind
+        if normalized.get(("xdg-open", new_chat_uri)) is not ToolKind.NEW_CHAT_URI:
+            raise ValueError("installation action manifest is invalid")
+        self._actions = normalized
+
+    def decide(self, tool_name: str, tool_input: object) -> InstallationPermission:
+        if not isinstance(tool_input, dict):
+            return InstallationPermission(PermissionDecision.DENY)
+        if tool_name == "WebFetch" and _is_public_raw_url(tool_input.get("url")):
+            return InstallationPermission(PermissionDecision.ALLOW)
+        if tool_name != "Bash":
+            return InstallationPermission(PermissionDecision.DENY)
+        command = tool_input.get("command")
+        if _is_direct_public_curl(command):
+            return InstallationPermission(PermissionDecision.ALLOW)
+        argv = _bash_action_argv(command)
+        kind = self._actions.get(argv, ToolKind.OTHER) if argv is not None else ToolKind.OTHER
+        if kind is ToolKind.LOGIN:
+            if not isinstance(command, str):
+                return InstallationPermission(PermissionDecision.DENY)
+            try:
+                wrapper = tuple(shlex.split(command, posix=True))
+            except ValueError:
+                return InstallationPermission(PermissionDecision.DENY)
+            if wrapper != self._login_wrapper:
+                return InstallationPermission(PermissionDecision.DENY)
+        if kind in {
+            ToolKind.MARKETPLACE_ADD,
+            ToolKind.PLUGIN_INSTALL,
+            ToolKind.LOGIN,
+            ToolKind.NEW_CHAT_URI,
+        }:
+            return InstallationPermission(PermissionDecision.ALLOW, kind)
+        return InstallationPermission(PermissionDecision.DENY)
+
+
+def _force_permission_request(tool_use_id: object, observed: set[str]) -> dict[str, object]:
+    """Make the SDK ask our callback even when its own rules would allow a tool."""
+
+    if isinstance(tool_use_id, str) and tool_use_id:
+        observed.add(tool_use_id)
+    return {
+        "continue_": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+        },
+    }
 
 
 def _stream_event(record: object) -> object | None:
@@ -756,6 +937,362 @@ class SubprocessClaudeDriver:
         return _is_exact_public_sensai_inventory(entries)
 
 
+def _owned_run_child_absent(run_root: Path) -> bool:
+    """Confirm that no process remains with a working directory in this run."""
+
+    try:
+        approved_root = run_root.resolve(strict=True)
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                process_directory = (entry / "cwd").resolve(strict=True)
+            except OSError:
+                continue
+            if process_directory.is_relative_to(approved_root):
+                return False
+    except OSError:
+        return False
+    return True
+
+
+@dataclass(slots=True)
+class _OAuthBrowserHandoff:
+    """A disposable xdg-open bridge for exactly one normal OAuth browser flow."""
+
+    work: Path
+    environment: dict[str, str]
+    expected_new_chat_uri: str
+    marker: Path
+
+    @classmethod
+    def create(
+        cls, work: Path, environment: dict[str, str], expected_new_chat_uri: str
+    ) -> _OAuthBrowserHandoff:
+        if not _BROWSER_TOOL.is_file():
+            raise ProductionE2EError("oauth_browser_tool_unavailable")
+        marker = work / ".sensai-oauth-browser-opened"
+        bridge_dir = work / ".sensai-xdg-open"
+        bridge_dir.mkdir(mode=0o700)
+        bridge = bridge_dir / "xdg-open"
+        bridge.write_text(
+            "#!" + sys.executable + "\n"
+            "import os\n"
+            "import subprocess\n"
+            "import sys\n"
+            "from urllib.parse import urlsplit\n"
+            f"browser_tool = {str(_BROWSER_TOOL)!r}\n"
+            f"marker = {str(marker)!r}\n"
+            f"new_chat_uri = {expected_new_chat_uri!r}\n"
+            "oauth_hosts = {'black-vector.com', 'accounts.google.com'}\n"
+            "if len(sys.argv) != 2:\n"
+            "    raise SystemExit(64)\n"
+            "target = sys.argv[1]\n"
+            "if target == new_chat_uri:\n"
+            "    raise SystemExit(0)\n"
+            "parsed = urlsplit(target)\n"
+            "try:\n"
+            "    port = parsed.port\n"
+            "except ValueError:\n"
+            "    raise SystemExit(64)\n"
+            "if (parsed.scheme != 'https' or parsed.hostname not in oauth_hosts\n"
+            "        or port not in (None, 443) or parsed.username or parsed.password):\n"
+            "    raise SystemExit(64)\n"
+            "if parsed.hostname == 'black-vector.com' and not parsed.path.startswith('/sensai'):\n"
+            "    raise SystemExit(64)\n"
+            "with open(marker, 'x', encoding='ascii') as opened:\n"
+            "    opened.write('opened\\n')\n"
+            "result = subprocess.run(\n"
+            "    [sys.executable, browser_tool, 'open_oauth_url_stdin'],\n"
+            "    input=target.encode('utf-8'),\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            "    env=os.environ.copy(),\n"
+            "    check=False,\n"
+            ")\n"
+            "raise SystemExit(result.returncode)\n",
+            encoding="utf-8",
+        )
+        bridge.chmod(0o700)
+        browser_environment = dict(environment)
+        browser_environment["PATH"] = str(bridge_dir) + os.pathsep + environment.get("PATH", "")
+        browser_environment["CODEX_BROWSER_PROJECT_DIR"] = str(work.parent)
+        browser_environment["CODEX_BROWSER_SESSION_ID"] = f"sensai-install-{uuid.uuid4()}"
+        browser_environment["CODEX_BROWSER_HEADLESS"] = "1"
+        browser_environment["CODEX_BROWSER_CLONE_MODE"] = "light"
+        return cls(work, browser_environment, expected_new_chat_uri, marker)
+
+    def cleanup(self) -> bool:
+        """Release only the fresh skill-managed browser session if OAuth opened it."""
+
+        if not self.marker.exists():
+            return True
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(_BROWSER_TOOL), "quit"],
+                cwd=self.work,
+                env=self.environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=MCP_STATUS_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
+
+
+class SdkClaudeDriver(SubprocessClaudeDriver):
+    """Use the documented Agent SDK callback instead of CLI shell allow rules."""
+
+    def run_agent(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        timeout_seconds: int,
+        expected_visible_messages: Sequence[str],
+        expected_session: uuid.UUID,
+        expected_new_chat_uri: str | None,
+    ) -> AgentEvidence:
+        _assert_normal_browser_path(command)
+        if expected_new_chat_uri is None or not command or command[-1] == "":
+            raise ProductionE2EError("sdk_installation_arguments_invalid")
+        try:
+            return asyncio.run(
+                self._run_agent_async(
+                    executable=str(command[0]),
+                    prompt=str(command[-1]),
+                    cwd=cwd,
+                    environment=environment,
+                    timeout_seconds=timeout_seconds,
+                    expected_visible_messages=expected_visible_messages,
+                    expected_session=expected_session,
+                    expected_new_chat_uri=expected_new_chat_uri,
+                )
+            )
+        except RuntimeError as error:
+            if "asyncio.run() cannot be called" in str(error):
+                raise ProductionE2EError("sdk_event_loop_unavailable") from error
+            raise
+
+    async def _run_agent_async(
+        self,
+        *,
+        executable: str,
+        prompt: str,
+        cwd: Path,
+        environment: dict[str, str],
+        timeout_seconds: int,
+        expected_visible_messages: Sequence[str],
+        expected_session: uuid.UUID,
+        expected_new_chat_uri: str,
+    ) -> AgentEvidence:
+        try:
+            from claude_agent_sdk import (
+                AssistantMessage,
+                ClaudeAgentOptions,
+                ClaudeSDKClient,
+                HookMatcher,
+                PermissionResultAllow,
+                PermissionResultDeny,
+                ResultMessage,
+                TextBlock,
+                ToolResultBlock,
+                ToolUseBlock,
+                UserMessage,
+            )
+        except ImportError as error:
+            raise ProductionE2EError("claude_agent_sdk_unavailable") from error
+
+        policy = InstallationPermissionPolicy(
+            new_chat_uri=expected_new_chat_uri,
+            claude_linux_actions=tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS),
+        )
+        handoff = _OAuthBrowserHandoff.create(cwd, environment, expected_new_chat_uri)
+        text_blocks: list[TextEvidence] = []
+        calls: list[ToolKind] = []
+        results: list[ToolResultEvidence] = []
+        event_order: list[str] = []
+        outstanding: dict[str, ToolKind] = {}
+        pretool_ids: set[str] = set()
+        result_seen = False
+        session_verified = False
+        terminal_error = False
+        timed_out = False
+        connection_verified = False
+        plugin_verified = False
+
+        async def force_permission(
+            _hook_input: Any, tool_use_id: str | None, _hook_context: Any
+        ) -> Any:
+            return _force_permission_request(tool_use_id, pretool_ids)
+
+        async def decide(tool_name: str, tool_input: dict[str, Any], context: Any) -> Any:
+            nonlocal connection_verified, plugin_verified
+            tool_use_id = getattr(context, "tool_use_id", None)
+            if not isinstance(tool_use_id, str) or tool_use_id not in pretool_ids:
+                return PermissionResultDeny(
+                    message="Installation permission gate was not observed."
+                )
+            decision = policy.decide(tool_name, tool_input)
+            if decision.decision is PermissionDecision.DENY:
+                return PermissionResultDeny(message="Not part of the Sensai installation flow.")
+            if decision.action is ToolKind.NEW_CHAT_URI:
+                connection_verified = await asyncio.to_thread(
+                    self.mcp_configuration_observed,
+                    _status_command(executable),
+                    cwd=cwd,
+                    environment=handoff.environment,
+                    timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
+                )
+                plugin_verified = await asyncio.to_thread(
+                    self.public_sensai_plugin_installed,
+                    _plugin_list_command(executable),
+                    cwd=cwd,
+                    environment=handoff.environment,
+                    timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
+                )
+                if not connection_verified or not plugin_verified:
+                    return PermissionResultDeny(message="Sensai is not ready for the next chat.")
+            if decision.action is not None:
+                calls.append(decision.action)
+                event_order.append(decision.action.value)
+                outstanding[tool_use_id] = decision.action
+            return PermissionResultAllow()
+
+        options = ClaudeAgentOptions(
+            cli_path=executable,
+            cwd=cwd,
+            env=handoff.environment,
+            model=CLAUDE_SONNET_5_MODEL,
+            tools=["WebFetch", "Bash"],
+            allowed_tools=[],
+            permission_mode="default",
+            can_use_tool=decide,
+            strict_mcp_config=True,
+            mcp_servers={},
+            setting_sources=[],
+            skills=[],
+            plugins=[],
+            hooks={
+                "PreToolUse": [
+                    HookMatcher(matcher="Bash|WebFetch", hooks=[force_permission])
+                ]
+            },
+            session_id=str(expected_session),
+            max_turns=16,
+            stderr=lambda _line: None,
+        )
+        client = ClaudeSDKClient(options=options)
+        disconnected = False
+        child_absent = False
+        try:
+            async def receive() -> None:
+                nonlocal result_seen, session_verified, terminal_error
+                await client.connect()
+                await client.query(prompt)
+                async for message in client.receive_response():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                accumulator = _TextAccumulator.new()
+                                accumulator.add(block.text)
+                                expected = (
+                                    expected_visible_messages[len(text_blocks)]
+                                    if len(text_blocks) < len(expected_visible_messages)
+                                    else None
+                                )
+                                text_blocks.append(
+                                    TextEvidence(
+                                        expected is not None and accumulator.matches(expected),
+                                        accumulator.cyrillic_letters,
+                                        accumulator.latin_letters,
+                                    )
+                                )
+                                event_order.append("visible")
+                            elif isinstance(block, ToolUseBlock):
+                                # The callback above is the only source of an allowed action.
+                                del block
+                    elif isinstance(message, UserMessage) and isinstance(message.content, list):
+                        for block in message.content:
+                            if isinstance(block, ToolResultBlock):
+                                kind = outstanding.pop(block.tool_use_id, None)
+                                if kind is not None:
+                                    results.append(
+                                        ToolResultEvidence(kind, block.is_error is not True)
+                                    )
+                    elif isinstance(message, ResultMessage):
+                        result_seen = True
+                        session_verified = message.session_id == str(expected_session)
+                        terminal_error = message.is_error
+
+            try:
+                await asyncio.wait_for(receive(), timeout=timeout_seconds)
+            except TimeoutError:
+                timed_out = True
+                with suppress(Exception):
+                    await client.interrupt()
+        except Exception:
+            terminal_error = True
+        finally:
+            if timed_out:
+                with suppress(Exception):
+                    await client.interrupt()
+            disconnect_failed = False
+            try:
+                await client.disconnect()
+            except Exception:
+                disconnect_failed = True
+            else:
+                disconnected = True
+            browser_cleaned = handoff.cleanup()
+            child_absent = _owned_run_child_absent(cwd.parent)
+            if disconnect_failed:
+                raise ProductionE2EError("claude_sdk_cleanup_failed")
+            if not child_absent:
+                raise ProductionE2EError("claude_sdk_child_remained")
+            if not browser_cleaned:
+                raise ProductionE2EError("oauth_browser_cleanup_failed")
+
+        successful = tuple(item.kind for item in results if item.succeeded)
+        completed_cleanly = (
+            result_seen
+            and not terminal_error
+            and not timed_out
+            and disconnected
+            and child_absent
+        )
+        return AgentEvidence(
+            result_seen=result_seen,
+            session_verified=session_verified,
+            malformed=False,
+            unclosed_block=False,
+            stream_limit_exceeded=False,
+            timed_out=timed_out,
+            returncode=0 if completed_cleanly else 1,
+            text_messages=tuple(text_blocks),
+            tool_calls=tuple(calls),
+            successful_tool_results=successful,
+            tool_results=tuple(results),
+            event_order=tuple(event_order),
+            record_kinds=(),
+            exit_category=(
+                ExitCategory.CLEAN
+                if result_seen and not terminal_error
+                else ExitCategory.NONZERO_UNCLASSIFIED
+            ),
+            exit_stage=_exit_stage(successful),
+            terminal_result_kind=TerminalResultKind.NONE,
+            terminal_error_count=0,
+            stderr_seen=False,
+            sensai_connection_verified=connection_verified,
+            public_sensai_plugin_installed=plugin_verified,
+        )
+
+
 def _is_exact_public_sensai_inventory(entries: object) -> bool:
     if not isinstance(entries, list) or not all(isinstance(item, dict) for item in entries):
         return False
@@ -765,19 +1302,6 @@ def _is_exact_public_sensai_inventory(entries: object) -> bool:
         and sensai[0].get("id") == "sensai@sensai"
         and sensai[0].get("scope") == "user"
         and sensai[0].get("enabled") is True
-    )
-
-
-def _e2e_allowed_tools(claude_linux_actions: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
-    marketplace_add, plugin_install, sensai_login, new_chat = (
-        shlex.join(action) for action in claude_linux_actions
-    )
-    return (
-        _E2E_WEBFETCH_PERMISSION,
-        f"Bash({marketplace_add})",
-        f"Bash({plugin_install})",
-        f"Bash({sensai_login})",
-        f"Bash({new_chat})",
     )
 
 
@@ -792,7 +1316,10 @@ def _agent_command(
     session: uuid.UUID,
     claude_linux_actions: tuple[tuple[str, ...], ...],
 ) -> tuple[str, ...]:
-    allowed_tools = _e2e_allowed_tools(claude_linux_actions)
+    # This tuple is a closed description for injected unit drivers.  The
+    # production path below uses the Agent SDK callback rather than handing the
+    # CLI a string allowlist of shell spellings.
+    del claude_linux_actions
     command = (
         executable,
         "-p",
@@ -805,13 +1332,6 @@ def _agent_command(
         "--restricted",
         "--tools",
         "WebFetch,Bash",
-        "--allowed-tools",
-        ",".join(allowed_tools),
-        "--permission-prompts",
-        "none",
-        "--no-chrome",
-        "--no-session-persistence",
-        "--strict-mcp-config",
         "--session-id",
         str(session),
         prompt,
@@ -844,7 +1364,7 @@ class ProductionSensaiE2E:
         executable_resolver: Callable[[], str] = resolve_installed_wsl_claude,
     ) -> None:
         self._profile = profile
-        self._driver = driver or SubprocessClaudeDriver()
+        self._driver = driver or SdkClaudeDriver()
         self._contract_loader = contract_loader
         self._executable_resolver = executable_resolver
 
@@ -883,20 +1403,6 @@ class ProductionSensaiE2E:
             expected_new_chat_uri=new_chat_uri,
         )
         self._require_installation(installation)
-        if not self._driver.mcp_configuration_observed(
-            _status_command(executable),
-            cwd=run.work,
-            environment=run.environment,
-            timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
-        ):
-            raise ProductionE2EError("sensai_endpoint_configuration_not_verified")
-        if not self._driver.public_sensai_plugin_installed(
-            _plugin_list_command(executable),
-            cwd=run.work,
-            environment=run.environment,
-            timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
-        ):
-            raise ProductionE2EError("public_sensai_plugin_not_verified")
         return ProductionE2EReport(True, True, True, True, True, True)
 
     @staticmethod
@@ -933,6 +1439,10 @@ class ProductionSensaiE2E:
                 raise ProductionE2EError(f"installation_{kind}_not_observed")
         if evidence.tool_calls.count(ToolKind.NEW_CHAT_URI) != 1:
             raise ProductionE2EError("installation_new_chat_uri_not_observed")
+        if not evidence.sensai_connection_verified:
+            raise ProductionE2EError("sensai_endpoint_configuration_not_verified")
+        if not evidence.public_sensai_plugin_installed:
+            raise ProductionE2EError("public_sensai_plugin_not_verified")
         if ToolKind.FORBIDDEN_BROWSER_MODE in evidence.tool_calls:
             raise ProductionE2EError("installation_no_browser_forbidden")
         if evidence.event_order != (

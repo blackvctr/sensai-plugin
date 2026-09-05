@@ -5,7 +5,7 @@ import os
 import runpy
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -17,6 +17,8 @@ from sensai_plugin.claude_production_e2e import (
     ClaudeDriver,
     ExitCategory,
     ExitStage,
+    InstallationPermissionPolicy,
+    PermissionDecision,
     ProductionE2EError,
     ProductionE2EReport,
     ProductionSensaiE2E,
@@ -26,8 +28,11 @@ from sensai_plugin.claude_production_e2e import (
     ToolResultEvidence,
     _agent_command,
     _assert_normal_browser_path,
+    _bash_action_argv,
     _classify_bash_command,
     _consume_stream,
+    _force_permission_request,
+    _is_allowed_oauth_entry_url,
     _is_exact_public_sensai_inventory,
     fetch_public_readme_contract,
 )
@@ -98,6 +103,8 @@ def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEv
         terminal_result_kind=TerminalResultKind.NONE,
         terminal_error_count=0,
         stderr_seen=False,
+        sensai_connection_verified=True,
+        public_sensai_plugin_installed=True,
     )
 
 
@@ -246,21 +253,19 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     driver = _successful_driver()
     report = _runner(profile, driver).run()
     assert report.complete
-    assert len(driver.calls) == 4
-    auth, installation, connection, plugin = driver.calls
+    assert len(driver.calls) == 2
+    auth, installation = driver.calls
     assert auth.command == ("claude", "auth", "status")
     assert installation.command[:2] == ("claude", "-p")
     assert installation.command[-1].startswith("Установи Sensai ")
     assert installation.command[installation.command.index("--model") + 1] == "claude-sonnet-5"
     assert "--no-browser" not in installation.command
     assert installation.expected_new_chat_uri == _contract().russian_new_chat_uri
-    assert connection.command == ("claude", "mcp", "get", "plugin:sensai:sensai")
-    assert plugin.command == ("claude", "plugin", "list", "--json")
     assert all(call.cwd.name == "work" for call in driver.calls)
     assert not list((profile / "runs").iterdir())
 
 
-def test_agent_command_exposes_only_exact_e2e_webfetch_and_installation_actions() -> None:
+def test_agent_command_exposes_tools_without_a_brittle_shell_allowlist() -> None:
     command = _agent_command(
         "claude",
         prompt="Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md",
@@ -268,20 +273,9 @@ def test_agent_command_exposes_only_exact_e2e_webfetch_and_installation_actions(
         claude_linux_actions=tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS),
     )
 
-    allowed = command[command.index("--allowed-tools") + 1].split(",")
-    assert allowed == [
-        "WebFetch(domain:raw.githubusercontent.com)",
-        "Bash(claude plugin marketplace add blackvctr/sensai-plugin)",
-        "Bash(claude plugin install sensai@sensai --scope user)",
-        "Bash(script -q -c 'claude mcp login plugin:sensai:sensai' /dev/null)",
-        f"Bash(xdg-open '{CLAUDE_LINUX_ACTIONS[-1][1][1]}')",
-    ]
     assert command[command.index("--tools") + 1] == "WebFetch,Bash"
-    assert command[command.index("--permission-prompts") + 1] == "none"
-    for flag in ("--restricted", "--no-chrome", "--no-session-persistence", "--strict-mcp-config"):
-        assert flag in command
-    assert all("*" not in value for value in allowed)
-    assert "Bash" not in allowed
+    assert "--allowed-tools" not in command
+    assert "--permission-prompts" not in command
 
 
 def test_installation_rejects_nonexact_visible_message() -> None:
@@ -316,15 +310,15 @@ def test_installation_requires_connection_and_public_plugin_after_login() -> Non
     evidence = _successful_driver().evidence
     profile = _profile()
     with pytest.raises(ProductionE2EError, match="sensai_endpoint_configuration_not_verified"):
-        _runner(profile, _Driver(evidence, connected=False)).run()
+        _runner(profile, _Driver(replace(evidence, sensai_connection_verified=False))).run()
     with pytest.raises(ProductionE2EError, match="public_sensai_plugin_not_verified"):
-        _runner(profile, _Driver(evidence, installed=False)).run()
+        _runner(profile, _Driver(replace(evidence, public_sensai_plugin_installed=False))).run()
 
 
 def test_installation_has_exactly_one_agent_turn() -> None:
     driver = _successful_driver()
     _runner(_profile(), driver).run()
-    assert len(driver.calls) == 4
+    assert len(driver.calls) == 2
     assert all("--resume" not in call.command for call in driver.calls)
 
 
@@ -354,7 +348,75 @@ def test_bash_classifier_requires_real_installation_command_semantics() -> None:
         is ToolKind.PLUGIN_INSTALL
     )
     assert _classify_bash_command(f"xdg-open {uri!r}", uri) is ToolKind.NEW_CHAT_URI
-    assert _classify_bash_command(f"xdg-open {uri}", uri) is ToolKind.OTHER
+    assert _classify_bash_command(f"xdg-open {uri}", uri) is ToolKind.NEW_CHAT_URI
+
+
+def test_permission_policy_normalizes_quoting_but_rejects_shell_composition() -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    uri = actions[-1][1]
+    policy = InstallationPermissionPolicy(new_chat_uri=uri, claude_linux_actions=actions)
+
+    assert _bash_action_argv("claude plugin marketplace add blackvctr/sensai-plugin") == actions[0]
+    assert _bash_action_argv(
+        "script -q -c 'claude mcp login plugin:sensai:sensai' /dev/null"
+    ) == ("claude", "mcp", "login", "plugin:sensai:sensai")
+    assert policy.decide(
+        "Bash", {"command": "claude plugin marketplace add blackvctr/sensai-plugin"}
+    ).decision is PermissionDecision.ALLOW
+    assert policy.decide("Bash", {"command": f"xdg-open {uri!r}"}).action is ToolKind.NEW_CHAT_URI
+    assert policy.decide(
+        "Bash", {"command": "claude plugin marketplace add blackvctr/sensai-plugin; id"}
+    ).decision is PermissionDecision.DENY
+    # The native README wrapper is required because the bare login command has no TTY.
+    assert (
+        policy.decide("Bash", {"command": "claude mcp login plugin:sensai:sensai"}).decision
+        is PermissionDecision.DENY
+    )
+    assert (
+        policy.decide("Bash", {"command": "curl -fsSL https://example.test/README.md"}).decision
+        is PermissionDecision.DENY
+    )
+
+
+def test_permission_policy_allows_only_public_raw_repository_reads() -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
+    public = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/.claude-plugin/marketplace.json"
+
+    assert policy.decide("WebFetch", {"url": public}).decision is PermissionDecision.ALLOW
+    assert (
+        policy.decide("Bash", {"command": f"curl -fsSL {public}"}).decision
+        is PermissionDecision.ALLOW
+    )
+    assert (
+        policy.decide("WebFetch", {"url": public + "?token=private"}).decision
+        is PermissionDecision.DENY
+    )
+    assert policy.decide("Read", {"file_path": "/etc/passwd"}).decision is PermissionDecision.DENY
+
+
+def test_oauth_entry_url_allows_only_sensai_or_google_without_credentials() -> None:
+    assert _is_allowed_oauth_entry_url("https://black-vector.com/sensai/mcp")
+    assert _is_allowed_oauth_entry_url("https://accounts.google.com/o/oauth2/v2/auth?state=private")
+    assert _is_allowed_oauth_entry_url("https://accounts.google.com:443/o/oauth2/v2/auth")
+    assert not _is_allowed_oauth_entry_url("https://example.test/oauth")
+    assert not _is_allowed_oauth_entry_url("https://token@example.test/oauth")
+    assert not _is_allowed_oauth_entry_url("https://black-vector.com/elsewhere")
+    assert not _is_allowed_oauth_entry_url("https://black-vector.com:8443/sensai/mcp")
+
+
+def test_pretool_gate_requires_the_sdk_callback_for_every_observed_tool() -> None:
+    observed: set[str] = set()
+    assert _force_permission_request("tool-1", observed) == {
+        "continue_": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+        },
+    }
+    assert observed == {"tool-1"}
+    _force_permission_request(None, observed)
+    assert observed == {"tool-1"}
 
 
 def test_parser_handles_empty_initial_tool_input_and_partial_json() -> None:

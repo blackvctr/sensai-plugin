@@ -10,6 +10,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+  "claude-agent-sdk==0.2.148",
   "httpx==0.28.1",
   "mcp==1.28.1",
   "mypy>=1.17.1,<2",
