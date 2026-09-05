@@ -79,6 +79,15 @@ _TERMINAL_REFERENCE = re.compile(r"(?:\bterminal\b|\b(?:bash|shell)\b|терми
 class ProductionE2EError(RuntimeError):
     """One safe category explaining an installation acceptance failure."""
 
+    def __init__(
+        self,
+        phase: str,
+        *,
+        before_marketplace_receipt: PreMarketplaceFailureReceipt | None = None,
+    ) -> None:
+        super().__init__(phase)
+        self.before_marketplace_receipt = before_marketplace_receipt
+
 
 @dataclass(frozen=True, slots=True)
 class InstallationScenario:
@@ -240,6 +249,69 @@ class TerminalResultKind(StrEnum):
     OTHER = "other"
 
 
+class SdkExceptionKind(StrEnum):
+    """Closed classes of an exception raised by the local SDK driver.
+
+    The exception message and concrete third-party class are deliberately not
+    retained.  A receipt must be useful for choosing the next diagnostic step
+    without becoming a second copy of Claude, OAuth, or network output.
+    """
+
+    NONE = "none"
+    OS = "os"
+    VALUE = "value"
+    RUNTIME = "runtime"
+    OTHER = "other"
+
+
+class SdkResultKind(StrEnum):
+    """Closed reading of the structured terminal SDK result, when present."""
+
+    NONE = "none"
+    SUCCESS = "success"
+    ERROR = "error"
+    OTHER = "other"
+
+
+class PreMarketplaceFailureKind(StrEnum):
+    """Why a full E2E ended before adding the public marketplace."""
+
+    TIMEOUT = "timeout"
+    SDK_EXCEPTION = "sdk_exception"
+    SDK_RESULT_ERROR = "sdk_result_error"
+    MISSING_RESULT = "missing_result"
+    COMPLETED_BEFORE_MARKETPLACE = "completed_before_marketplace"
+
+
+@dataclass(frozen=True, slots=True)
+class PreMarketplaceFailureReceipt:
+    """Small redacted receipt for a full E2E that stops before marketplace add.
+
+    Every field is a closed category.  In particular it contains no Claude
+    text, tool input, URL, session identifier, or exception message.
+    """
+
+    kind: PreMarketplaceFailureKind
+    stage: ExitStage
+    sdk_exception: SdkExceptionKind
+    sdk_result: SdkResultKind
+    first_text: FirstTextKind
+    first_tool_intent: ToolKind | None
+    first_denied_tool_intent: ToolKind | None
+
+    def machine_line(self) -> str:
+        """Return the complete public receipt without formatting free text."""
+
+        first_tool = self.first_tool_intent or "none"
+        first_denied = self.first_denied_tool_intent or "none"
+        return (
+            "before_marketplace="
+            f"kind:{self.kind},stage:{self.stage},sdk_exception:{self.sdk_exception},"
+            f"sdk_result:{self.sdk_result},first_text:{self.first_text},"
+            f"first_tool:{first_tool},first_denied:{first_denied}"
+        )
+
+
 _TERMINAL_RESULT_SUBTYPES = {
     "success": TerminalResultKind.SUCCESS,
     "error_during_execution": TerminalResultKind.EXECUTION,
@@ -299,6 +371,8 @@ class AgentEvidence:
     tool_intents: tuple[ToolKind, ...] = ()
     denied_tool_intents: tuple[ToolKind, ...] = ()
     first_text_kind: FirstTextKind = FirstTextKind.NONE
+    sdk_exception_kind: SdkExceptionKind = SdkExceptionKind.NONE
+    sdk_result_kind: SdkResultKind = SdkResultKind.NONE
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
         return (
@@ -445,6 +519,64 @@ def _classify_first_text(text: str) -> FirstTextKind:
     if any(marker in normalized for marker in trust_markers):
         return FirstTextKind.TRUST_QUESTION
     return FirstTextKind.OTHER
+
+
+def _classify_sdk_exception(error: Exception) -> SdkExceptionKind:
+    """Keep only a stable local exception family, never its name or message."""
+
+    if isinstance(error, OSError):
+        return SdkExceptionKind.OS
+    if isinstance(error, ValueError):
+        return SdkExceptionKind.VALUE
+    if isinstance(error, RuntimeError):
+        return SdkExceptionKind.RUNTIME
+    return SdkExceptionKind.OTHER
+
+
+def _sdk_result_kind(message: object) -> SdkResultKind:
+    """Read the documented result flag without retaining result content."""
+
+    is_error = getattr(message, "is_error", None)
+    if is_error is True:
+        return SdkResultKind.ERROR
+    if is_error is False:
+        return SdkResultKind.SUCCESS
+    return SdkResultKind.OTHER
+
+
+def _pre_marketplace_failure_receipt(
+    evidence: AgentEvidence,
+) -> PreMarketplaceFailureReceipt | None:
+    """Create a receipt only for a failed full run before marketplace add."""
+
+    if evidence.exit_stage is not ExitStage.BEFORE_MARKETPLACE:
+        return None
+    if evidence.timed_out:
+        kind = PreMarketplaceFailureKind.TIMEOUT
+    elif evidence.sdk_exception_kind is not SdkExceptionKind.NONE:
+        kind = PreMarketplaceFailureKind.SDK_EXCEPTION
+    elif evidence.sdk_result_kind is SdkResultKind.ERROR:
+        kind = PreMarketplaceFailureKind.SDK_RESULT_ERROR
+    elif not evidence.result_seen:
+        kind = PreMarketplaceFailureKind.MISSING_RESULT
+    elif evidence.returncode != 0 or evidence.sdk_result_kind is not SdkResultKind.SUCCESS:
+        # A clean SDK result is expected to mark ``is_error=False``.  A future
+        # result shape is still diagnosed as a closed pre-marketplace outcome.
+        kind = PreMarketplaceFailureKind.COMPLETED_BEFORE_MARKETPLACE
+    else:
+        # The process returned a normal result but did not add the marketplace.
+        kind = PreMarketplaceFailureKind.COMPLETED_BEFORE_MARKETPLACE
+    return PreMarketplaceFailureReceipt(
+        kind=kind,
+        stage=evidence.exit_stage,
+        sdk_exception=evidence.sdk_exception_kind,
+        sdk_result=evidence.sdk_result_kind,
+        first_text=evidence.first_text_kind,
+        first_tool_intent=evidence.tool_intents[0] if evidence.tool_intents else None,
+        first_denied_tool_intent=(
+            evidence.denied_tool_intents[0] if evidence.denied_tool_intents else None
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -1365,6 +1497,8 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         connection_verified = False
         plugin_verified = False
         first_text_kind = FirstTextKind.NONE
+        sdk_exception_kind = SdkExceptionKind.NONE
+        sdk_result_kind = SdkResultKind.NONE
 
         async def force_permission(
             _hook_input: Any, tool_use_id: str | None, _hook_context: Any
@@ -1432,6 +1566,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         try:
             async def receive() -> None:
                 nonlocal first_text_kind, result_seen, session_verified, terminal_error
+                nonlocal sdk_result_kind
                 await client.connect()
                 await client.query(prompt)
                 async for message in client.receive_response():
@@ -1459,6 +1594,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                         result_seen = True
                         session_verified = message.session_id == str(expected_session)
                         terminal_error = message.is_error
+                        sdk_result_kind = _sdk_result_kind(message)
 
             try:
                 await asyncio.wait_for(receive(), timeout=timeout_seconds)
@@ -1466,8 +1602,9 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                 timed_out = True
                 with suppress(Exception):
                     await client.interrupt()
-        except Exception:
+        except Exception as error:
             terminal_error = True
+            sdk_exception_kind = _classify_sdk_exception(error)
         finally:
             if timed_out:
                 with suppress(Exception):
@@ -1520,6 +1657,8 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
             tool_intents=tuple(intents),
             denied_tool_intents=tuple(denied_intents),
             first_text_kind=first_text_kind,
+            sdk_exception_kind=sdk_exception_kind,
+            sdk_result_kind=sdk_result_kind,
         )
 
 
@@ -1707,7 +1846,15 @@ class ProductionSensaiE2E:
             expected_session=session,
             expected_new_chat_uri=new_chat_uri,
         )
-        self._require_installation(installation)
+        try:
+            self._require_installation(installation)
+        except ProductionE2EError as error:
+            receipt = _pre_marketplace_failure_receipt(installation)
+            if receipt is not None:
+                raise ProductionE2EError(
+                    str(error), before_marketplace_receipt=receipt
+                ) from error
+            raise
         return ProductionE2EReport(True, True, True, True, True, True)
 
     @staticmethod

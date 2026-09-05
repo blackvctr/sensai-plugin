@@ -39,19 +39,26 @@ def main(argv: list[str] | None = None) -> int:
             expected_public_readme_sha256=arguments.expected_public_readme_sha256,
             first_comparison=arguments.first_comparison,
         )
-        report = runner.compare_first_response() if arguments.first_comparison else runner.run()
+        if arguments.first_comparison:
+            comparison = runner.compare_first_response()
+            first_tool = comparison.first_tool_intent or "none"
+            print(
+                "PRODUCTION_E2E_COMPARISON "
+                f"text={comparison.first_text_kind} first_tool={first_tool} "
+                f"denied={','.join(comparison.denied_tool_intents) or 'none'}"
+            )
+            return 0
+        report = runner.run()
     except (ClaudeE2EProfileError, ProductionE2EError) as error:
-        parser.exit(1, f"PRODUCTION_E2E_FAILED phase={error}\n")
+        receipt = (
+            error.before_marketplace_receipt
+            if isinstance(error, ProductionE2EError)
+            else None
+        )
+        detail = f" {receipt.machine_line()}" if receipt is not None else ""
+        parser.exit(1, f"PRODUCTION_E2E_FAILED phase={error}{detail}\n")
     except Exception:
         parser.exit(1, "PRODUCTION_E2E_FAILED phase=unexpected\n")
-    if arguments.first_comparison:
-        first_tool = report.first_tool_intent or "none"
-        print(
-            "PRODUCTION_E2E_COMPARISON "
-            f"text={report.first_text_kind} first_tool={first_tool} "
-            f"denied={','.join(report.denied_tool_intents) or 'none'}"
-        )
-        return 0
     if not report.complete:
         parser.exit(1, "PRODUCTION_E2E_FAILED phase=incomplete_safe_report\n")
     print("PRODUCTION_E2E_PASS installation=connected=new_chat")

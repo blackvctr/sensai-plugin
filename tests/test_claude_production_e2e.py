@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import runpy
 import shlex
+import sys
+import types
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -26,9 +29,14 @@ from sensai_plugin.claude_production_e2e import (
     FirstTextKind,
     InstallationPermissionPolicy,
     PermissionDecision,
+    PreMarketplaceFailureKind,
+    PreMarketplaceFailureReceipt,
     ProductionE2EError,
     ProductionE2EReport,
     ProductionSensaiE2E,
+    SdkClaudeDriver,
+    SdkExceptionKind,
+    SdkResultKind,
     TerminalResultKind,
     TextEvidence,
     ToolKind,
@@ -37,11 +45,13 @@ from sensai_plugin.claude_production_e2e import (
     _assert_normal_browser_path,
     _bash_action_argv,
     _classify_bash_command,
+    _classify_sdk_exception,
     _consume_stream,
     _force_permission_request,
     _is_allowed_oauth_entry_url,
     _is_exact_public_sensai_inventory,
     _is_exact_public_sensai_mcp_status,
+    _pre_marketplace_failure_receipt,
     fetch_public_readme_contract,
     fetch_public_readme_sha256,
 )
@@ -340,6 +350,190 @@ def test_first_comparison_keeps_only_redacted_first_reply_and_tool_categories() 
     assert report.first_tool_intent is ToolKind.PUBLIC_README_FETCH
     assert report.denied_tool_intents == (ToolKind.PUBLIC_METADATA_BASH,)
     assert driver.calls[1].command[-1] == PUBLIC_INSTALL_PROMPT
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [
+        (
+            replace(
+                _evidence(),
+                timed_out=True,
+                returncode=1,
+                exit_stage=ExitStage.BEFORE_MARKETPLACE,
+            ),
+            PreMarketplaceFailureKind.TIMEOUT,
+        ),
+        (
+            replace(
+                _evidence(),
+                returncode=1,
+                exit_stage=ExitStage.BEFORE_MARKETPLACE,
+                sdk_exception_kind=SdkExceptionKind.RUNTIME,
+            ),
+            PreMarketplaceFailureKind.SDK_EXCEPTION,
+        ),
+        (
+            replace(
+                _evidence(),
+                returncode=1,
+                exit_stage=ExitStage.BEFORE_MARKETPLACE,
+                sdk_result_kind=SdkResultKind.ERROR,
+            ),
+            PreMarketplaceFailureKind.SDK_RESULT_ERROR,
+        ),
+        (
+            replace(
+                _evidence(),
+                result_seen=False,
+                returncode=1,
+                exit_stage=ExitStage.BEFORE_MARKETPLACE,
+            ),
+            PreMarketplaceFailureKind.MISSING_RESULT,
+        ),
+    ],
+)
+def test_pre_marketplace_receipt_distinguishes_closed_sdk_failures(
+    evidence: AgentEvidence, expected: PreMarketplaceFailureKind
+) -> None:
+    receipt = _pre_marketplace_failure_receipt(evidence)
+
+    assert receipt is not None
+    assert receipt.kind is expected
+    assert receipt.stage is ExitStage.BEFORE_MARKETPLACE
+
+
+def test_pre_marketplace_receipt_keeps_only_categories_when_exception_is_poisoned() -> None:
+    poison = "oauth-token=private https://private.example/path -- command"
+    evidence = replace(
+        _evidence(),
+        returncode=1,
+        exit_stage=ExitStage.BEFORE_MARKETPLACE,
+        first_text_kind=FirstTextKind.REFUSAL,
+        tool_intents=(ToolKind.PUBLIC_METADATA_INVENTORY_BASH,),
+        denied_tool_intents=(ToolKind.PUBLIC_METADATA_INVENTORY_BASH,),
+        sdk_exception_kind=_classify_sdk_exception(RuntimeError(poison)),
+    )
+
+    receipt = _pre_marketplace_failure_receipt(evidence)
+
+    assert receipt is not None
+    assert receipt.sdk_exception is SdkExceptionKind.RUNTIME
+    assert receipt.first_text is FirstTextKind.REFUSAL
+    assert receipt.first_tool_intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
+    assert receipt.first_denied_tool_intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
+    assert poison not in receipt.machine_line()
+    assert "private.example" not in receipt.machine_line()
+
+
+def test_sdk_driver_records_poisoned_exception_as_a_closed_category(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poison = "oauth-token=private https://private.example/path -- command"
+
+    class FakeOptions:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeClient:
+        def __init__(self, *, options: object) -> None:
+            del options
+
+        async def connect(self) -> None:
+            raise RuntimeError(poison)
+
+        async def query(self, _prompt: str) -> None:
+            raise AssertionError("query must not run after the connection failure")
+
+        async def receive_response(self) -> object:
+            if False:  # pragma: no cover - makes this an async generator for the SDK shape.
+                yield None
+
+        async def interrupt(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+    class FakeHookMatcher:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class FakePermissionResult:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    fake_sdk = types.ModuleType("claude_agent_sdk")
+    fake_sdk.AssistantMessage = type("AssistantMessage", (), {})
+    fake_sdk.ClaudeAgentOptions = FakeOptions
+    fake_sdk.ClaudeSDKClient = FakeClient
+    fake_sdk.HookMatcher = FakeHookMatcher
+    fake_sdk.PermissionResultAllow = FakePermissionResult
+    fake_sdk.PermissionResultDeny = FakePermissionResult
+    fake_sdk.ResultMessage = type("ResultMessage", (), {})
+    fake_sdk.TextBlock = type("TextBlock", (), {})
+    fake_sdk.ToolResultBlock = type("ToolResultBlock", (), {})
+    fake_sdk.ToolUseBlock = type("ToolUseBlock", (), {})
+    fake_sdk.UserMessage = type("UserMessage", (), {})
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    work = tmp_path / "run" / "work"
+    work.mkdir(parents=True)
+
+    evidence = asyncio.run(
+        SdkClaudeDriver(first_comparison=True)._run_agent_async(
+            executable="claude",
+            prompt="fixed test input",
+            cwd=work,
+            environment={},
+            timeout_seconds=1,
+            expected_visible_messages=(),
+            expected_session=uuid.uuid4(),
+            expected_new_chat_uri=INSTALLATION_SCENARIO.new_chat_uri,
+        )
+    )
+
+    assert evidence.sdk_exception_kind is SdkExceptionKind.RUNTIME
+    assert evidence.sdk_result_kind is SdkResultKind.NONE
+    assert evidence.returncode == 1
+    receipt = _pre_marketplace_failure_receipt(evidence)
+    assert receipt is not None
+    assert receipt.kind is PreMarketplaceFailureKind.SDK_EXCEPTION
+    assert poison not in receipt.machine_line()
+    assert "private.example" not in receipt.machine_line()
+
+
+def test_full_run_attaches_before_marketplace_receipt_only_for_that_red_stage() -> None:
+    evidence = replace(
+        _evidence(),
+        returncode=1,
+        exit_stage=ExitStage.BEFORE_MARKETPLACE,
+        sdk_result_kind=SdkResultKind.ERROR,
+        first_text_kind=FirstTextKind.TRUST_QUESTION,
+        tool_intents=(ToolKind.PUBLIC_README_FETCH,),
+    )
+
+    with pytest.raises(ProductionE2EError) as caught:
+        _runner(_profile(), _Driver(evidence)).run()
+
+    receipt = caught.value.before_marketplace_receipt
+    assert receipt is not None
+    assert receipt.kind is PreMarketplaceFailureKind.SDK_RESULT_ERROR
+    assert receipt.first_text is FirstTextKind.TRUST_QUESTION
+    assert receipt.first_tool_intent is ToolKind.PUBLIC_README_FETCH
+
+
+def test_full_run_does_not_attach_early_receipt_after_marketplace() -> None:
+    evidence = replace(
+        _evidence(ToolKind.MARKETPLACE_ADD),
+        returncode=1,
+        exit_stage=ExitStage.AFTER_MARKETPLACE_BEFORE_PLUGIN,
+        sdk_result_kind=SdkResultKind.ERROR,
+    )
+
+    with pytest.raises(ProductionE2EError) as caught:
+        _runner(_profile(), _Driver(evidence)).run()
+
+    assert caught.value.before_marketplace_receipt is None
 
 
 def test_agent_command_exposes_tools_without_a_brittle_shell_allowlist() -> None:
@@ -1093,3 +1287,47 @@ def test_cli_accepts_only_the_installation_arguments(
                 "--unrelated-option",
             ]
         )
+
+
+def test_cli_emits_only_the_closed_early_failure_receipt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    namespace = _script_namespace()
+    poison = "oauth-token=private https://private.example/path"
+    receipt = PreMarketplaceFailureReceipt(
+        kind=PreMarketplaceFailureKind.SDK_EXCEPTION,
+        stage=ExitStage.BEFORE_MARKETPLACE,
+        sdk_exception=SdkExceptionKind.RUNTIME,
+        sdk_result=SdkResultKind.NONE,
+        first_text=FirstTextKind.REFUSAL,
+        first_tool_intent=ToolKind.PUBLIC_README_FETCH,
+        first_denied_tool_intent=ToolKind.PUBLIC_METADATA_INVENTORY_BASH,
+    )
+
+    class Runner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def run(self) -> ProductionE2EReport:
+            raise ProductionE2EError(
+                "installation_claude_exit_nonzero_unclassified_at_before_marketplace",
+                before_marketplace_receipt=receipt,
+            )
+
+    namespace["ProductionSensaiE2E"] = Runner
+    main = cast(Callable[[list[str]], int], namespace["main"])
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--profile",
+                str(tmp_path / "profile"),
+                "--expected-public-readme-sha256",
+                "0" * 64,
+            ]
+        )
+    output = capsys.readouterr().err
+    assert "before_marketplace=kind:sdk_exception" in output
+    assert "sdk_exception:runtime" in output
+    assert "first_tool:public_readme_fetch" in output
+    assert poison not in output
+    assert "private.example" not in output
