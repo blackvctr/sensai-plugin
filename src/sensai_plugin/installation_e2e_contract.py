@@ -48,6 +48,7 @@ class PublicReadmeContract:
     russian_install_prompt: str
     russian_authorization_message: str
     russian_new_chat_request: str
+    russian_new_chat_uri: str
     russian_ready_message: str
     claude_linux_actions: tuple[tuple[str, ...], ...]
 
@@ -173,7 +174,7 @@ def evaluate_installation_transcript(
         _record_additional_event_failures(
             transcript.events,
             failures,
-            russian_new_chat_request=public_contract.russian_new_chat_request,
+            russian_new_chat_uri=public_contract.russian_new_chat_uri,
         )
         return InstallationTranscriptReport(tuple(failures))
 
@@ -192,13 +193,13 @@ def evaluate_installation_transcript(
             failures.append("visible_message_not_russian")
     if not connection.connected:
         failures.append("sensai_connection_not_verified")
-    if not _is_valid_new_chat_uri(chat_uri.uri, public_contract.russian_new_chat_request):
+    if not _is_valid_new_chat_uri(chat_uri.uri, public_contract.russian_new_chat_uri):
         failures.append("wrong_new_chat_uri")
     return InstallationTranscriptReport(tuple(failures))
 
 
 def _record_additional_event_failures(
-    events: tuple[InstallationEvent, ...], failures: list[str], *, russian_new_chat_request: str
+    events: tuple[InstallationEvent, ...], failures: list[str], *, russian_new_chat_uri: str
 ) -> None:
     """Preserve concrete missing/duplicate evidence beside an order failure."""
 
@@ -212,9 +213,7 @@ def _record_additional_event_failures(
     if len(connections) != 1 or not connections[0].connected:
         failures.append("sensai_connection_not_verified")
     uri_attempts = [event for event in events if isinstance(event, ClaudeNewChatUriAttempt)]
-    if len(uri_attempts) != 1 or not _is_valid_new_chat_uri(
-        uri_attempts[0].uri, russian_new_chat_request
-    ):
+    if len(uri_attempts) != 1 or not _is_valid_new_chat_uri(uri_attempts[0].uri, russian_new_chat_uri):
         failures.append("wrong_new_chat_uri")
 
 
@@ -275,6 +274,7 @@ def _public_contract_from_markdown(markdown: str) -> PublicReadmeContract:
         russian_install_prompt=prompt_lines[0],
         russian_authorization_message=visible_messages[0],
         russian_new_chat_request=uri_request,
+        russian_new_chat_uri=new_chat_uri,
         russian_ready_message=visible_messages[1],
         claude_linux_actions=claude_actions,
     )
@@ -434,16 +434,10 @@ def _is_predominantly_cyrillic(text: str) -> bool:
     return cyrillic > latin and cyrillic > 0
 
 
-def _is_valid_new_chat_uri(uri: str, expected_request: str) -> bool:
-    """Accept only the exact ordinary Russian request published in README."""
+def _is_valid_new_chat_uri(uri: str, expected_uri: str) -> bool:
+    """Accept only the exact URI published in the validated manifest."""
 
-    request = _new_chat_request(uri)
-    return (
-        request is not None
-        and request == expected_request
-        and not request.startswith("/")
-        and _is_predominantly_cyrillic(request)
-    )
+    return uri == expected_uri
 
 
 def _new_chat_request(uri: str) -> str | None:

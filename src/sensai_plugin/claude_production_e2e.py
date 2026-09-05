@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
@@ -865,7 +864,7 @@ class ProductionSensaiE2E:
             timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
         ):
             raise ProductionE2EError("isolated_claude_auth_not_verified")
-        new_chat_uri = "claude://code/new?" + urlencode({"q": contract.russian_new_chat_request})
+        new_chat_uri = contract.russian_new_chat_uri
         installation = self._driver.run_agent(
             _agent_command(
                 executable,

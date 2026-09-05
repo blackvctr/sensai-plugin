@@ -107,6 +107,7 @@ class _Call:
     cwd: Path
     environment: dict[str, str]
     expected_session: uuid.UUID | None
+    expected_new_chat_uri: str | None = None
 
 
 class _Driver(ClaudeDriver):
@@ -135,7 +136,9 @@ class _Driver(ClaudeDriver):
         expected_session: uuid.UUID,
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence:
-        self.calls.append(_Call(tuple(command), cwd, dict(environment), expected_session))
+        self.calls.append(
+            _Call(tuple(command), cwd, dict(environment), expected_session, expected_new_chat_uri)
+        )
         return self.evidence
 
     def mcp_configuration_observed(
@@ -250,6 +253,7 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     assert installation.command[-1].startswith("Установи Sensai ")
     assert installation.command[installation.command.index("--model") + 1] == "claude-sonnet-5"
     assert "--no-browser" not in installation.command
+    assert installation.expected_new_chat_uri == _contract().russian_new_chat_uri
     assert connection.command == ("claude", "mcp", "get", "plugin:sensai:sensai")
     assert plugin.command == ("claude", "plugin", "list", "--json")
     assert all(call.cwd.name == "work" for call in driver.calls)

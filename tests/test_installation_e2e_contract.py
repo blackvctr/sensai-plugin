@@ -35,7 +35,7 @@ def _valid_transcript() -> InstallationTranscript:
             SensaiLoginStarted(),
             SensaiLoginCompleted(),
             ClaudeNewChatUriAttempt(
-                uri="claude://code/new?" + urlencode({"q": contract.russian_new_chat_request}),
+                uri=contract.russian_new_chat_uri,
             ),
             ClaudeVisibleMessage(text=contract.russian_ready_message),
             SensaiConnectionObserved(connected=True),
@@ -51,6 +51,7 @@ def test_reads_the_current_public_russian_prompt_and_new_chat_request() -> None:
     assert contract.russian_new_chat_request.startswith(
         "Проконсультируйся с Sensai."  # noqa: RUF001 - exact public Russian request
     )
+    assert contract.russian_new_chat_uri.endswith("%D0%B0%D1%85.")
 
 
 def test_rejects_unknown_duplicate_or_mismatched_install_manifest_data() -> None:
