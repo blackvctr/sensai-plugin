@@ -56,7 +56,11 @@ from sensai_plugin.claude_production_e2e import (
     _sdk_result_cause,
     fetch_public_readme_sha256,
 )
-from sensai_plugin.installation_e2e_contract import CLAUDE_LINUX_ACTIONS
+from sensai_plugin.installation_e2e_contract import (
+    CLAUDE_LINUX_ACTIONS,
+    CLAUDE_NEW_CHAT_REQUEST,
+    CLAUDE_NEW_CHAT_URI,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -96,6 +100,17 @@ def _text(*, expected: bool = True) -> TextEvidence:
 
 
 def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEvidence:
+    if texts:
+        # The public August flow installs first, explains the imminent Google
+        # sign-in, then opens the prepared session and reports completion.
+        event_order = (
+            *(tool.value for tool in tools[:2]),
+            "visible",
+            *(tool.value for tool in tools[2:]),
+            "visible",
+        )
+    else:
+        event_order = tuple(tool.value for tool in tools)
     return AgentEvidence(
         result_seen=True,
         session_verified=True,
@@ -108,11 +123,7 @@ def _evidence(*tools: ToolKind, texts: tuple[TextEvidence, ...] = ()) -> AgentEv
         tool_calls=tools,
         successful_tool_results=tools,
         tool_results=tuple(ToolResultEvidence(tool, True) for tool in tools),
-        event_order=(
-            ("visible", *(tool.value for tool in tools), "visible")
-            if texts
-            else tuple(tool.value for tool in tools)
-        ),
+        event_order=event_order,
         record_kinds=(),
         exit_category=ExitCategory.CLEAN,
         exit_stage=ExitStage.UNKNOWN,
@@ -298,6 +309,13 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     assert installation.expected_visible_messages == ()
     assert all(call.cwd.name == "work" for call in driver.calls)
     assert not list((profile / "runs").iterdir())
+
+
+def test_published_august_contract_opens_the_plugin_command_not_a_consultation_prompt() -> None:
+    assert CLAUDE_NEW_CHAT_REQUEST == "/sensai:sensai"
+    assert CLAUDE_NEW_CHAT_URI == "claude://code/new?q=%2Fsensai%3Asensai"
+    assert INSTALLATION_SCENARIO.new_chat_uri == CLAUDE_NEW_CHAT_URI
+    assert CLAUDE_LINUX_ACTIONS[-1] == ("new_chat", ("xdg-open", CLAUDE_NEW_CHAT_URI))
 
 
 def test_installation_prompt_is_fixed_test_input_not_a_readme_value() -> None:
@@ -823,6 +841,18 @@ def test_permission_policy_normalizes_quoting_but_rejects_shell_composition() ->
         ).decision
         is PermissionDecision.ALLOW
     )
+    assert (
+        policy.decide(
+            "Bash", {"command": "claude plugin install sensai@sensai --scope user"}
+        ).decision
+        is PermissionDecision.ALLOW
+    )
+    assert (
+        policy.decide(
+            "Bash", {"command": "script -q -c 'claude mcp login plugin:sensai:sensai' /dev/null"}
+        ).decision
+        is PermissionDecision.ALLOW
+    )
     assert policy.decide("Bash", {"command": f"xdg-open {uri!r}"}).action is ToolKind.NEW_CHAT_URI
     assert (
         policy.decide(
@@ -838,6 +868,36 @@ def test_permission_policy_normalizes_quoting_but_rejects_shell_composition() ->
     assert (
         policy.decide("Bash", {"command": "curl -fsSL https://example.test/README.md"}).decision
         is PermissionDecision.DENY
+    )
+
+
+def test_permission_policy_requires_the_published_installation_order() -> None:
+    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
+    policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
+
+    assert (
+        policy.decide("Bash", {"command": shlex.join(actions[1])}).decision
+        is PermissionDecision.DENY
+    )
+    assert (
+        policy.decide("Bash", {"command": shlex.join(actions[0])}).decision
+        is PermissionDecision.ALLOW
+    )
+    assert (
+        policy.decide("Bash", {"command": shlex.join(actions[3])}).decision
+        is PermissionDecision.DENY
+    )
+    assert (
+        policy.decide("Bash", {"command": shlex.join(actions[1])}).decision
+        is PermissionDecision.ALLOW
+    )
+    assert (
+        policy.decide("Bash", {"command": shlex.join(actions[2])}).decision
+        is PermissionDecision.ALLOW
+    )
+    assert (
+        policy.decide("Bash", {"command": shlex.join(actions[3])}).decision
+        is PermissionDecision.ALLOW
     )
 
 
@@ -923,16 +983,13 @@ def test_safe_metadata_inventory_is_allowed_once_before_installation_only(
     assert second.intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
 
 
-@pytest.mark.parametrize("action", CLAUDE_LINUX_ACTIONS)
-def test_safe_metadata_inventory_is_denied_after_any_install_action(
-    action: tuple[str, tuple[str, ...]],
-) -> None:
+def test_safe_metadata_inventory_is_denied_after_the_first_installation_action() -> None:
     actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
     policy = InstallationPermissionPolicy(new_chat_uri=actions[-1][1], claude_linux_actions=actions)
     command = _metadata_inventory_command()
 
     assert (
-        policy.decide("Bash", {"command": shlex.join(action[1])}).decision
+        policy.decide("Bash", {"command": shlex.join(actions[0])}).decision
         is PermissionDecision.ALLOW
     )
     decision = policy.decide("Bash", {"command": command})

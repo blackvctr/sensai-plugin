@@ -418,7 +418,7 @@ class AgentEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ProductionE2EReport:
-    installation_messages_exact: bool
+    localized_messages_accepted: bool
     normal_login_started: bool
     normal_login_completed: bool
     sensai_connection_verified: bool
@@ -429,7 +429,7 @@ class ProductionE2EReport:
     def complete(self) -> bool:
         return all(
             (
-                self.installation_messages_exact,
+                self.localized_messages_accepted,
                 self.normal_login_started,
                 self.normal_login_completed,
                 self.sensai_connection_verified,
@@ -890,7 +890,7 @@ class InstallationPermission:
 
 
 class InstallationPermissionPolicy:
-    """Permit public reads, one safe inventory, and four installation effects."""
+    """Permit public reads and the published Claude installation sequence."""
 
     def __init__(
         self,
@@ -922,6 +922,8 @@ class InstallationPermissionPolicy:
         if normalized.get(("xdg-open", new_chat_uri)) is not ToolKind.NEW_CHAT_URI:
             raise ValueError("installation action manifest is invalid")
         self._actions = normalized
+        self._action_order = action_kinds
+        self._next_action_index = 0
 
     def _intent(self, tool_name: str, tool_input: object) -> ToolKind:
         if not isinstance(tool_input, dict):
@@ -986,6 +988,12 @@ class InstallationPermissionPolicy:
             ToolKind.LOGIN,
             ToolKind.NEW_CHAT_URI,
         }:
+            if (
+                self._next_action_index >= len(self._action_order)
+                or kind is not self._action_order[self._next_action_index]
+            ):
+                return InstallationPermission(PermissionDecision.DENY, intent)
+            self._next_action_index += 1
             self._install_action_seen = True
             return InstallationPermission(PermissionDecision.ALLOW, intent, kind)
         return InstallationPermission(PermissionDecision.DENY, intent)
@@ -1633,6 +1641,10 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                 denied_intents.append(decision.intent)
                 return PermissionResultDeny(message="Not part of the Sensai installation flow.")
             if decision.action is ToolKind.NEW_CHAT_URI:
+                if not any(
+                    result.kind is ToolKind.LOGIN and result.succeeded for result in results
+                ):
+                    return PermissionResultDeny(message="Sensai sign-in has not completed.")
                 connection_verified = await asyncio.to_thread(
                     self.mcp_configuration_observed,
                     _status_command(executable),
@@ -1993,6 +2005,9 @@ class ProductionSensaiE2E:
             raise ProductionE2EError("installation_terminal_result_missing")
         if not evidence.session_verified:
             raise ProductionE2EError("installation_session_not_verified")
+        # The published flow has one short localized explanation before the
+        # normal Google sign-in and one localized completion message after the
+        # prepared /sensai:sensai new-chat attempt.
         if len(evidence.text_messages) != 2:
             raise ProductionE2EError("installation_visible_message_count_invalid")
         if any(item.cyrillic_letters <= item.latin_letters for item in evidence.text_messages):
@@ -2017,9 +2032,9 @@ class ProductionSensaiE2E:
         if ToolKind.FORBIDDEN_BROWSER_MODE in evidence.tool_calls:
             raise ProductionE2EError("installation_no_browser_forbidden")
         if evidence.event_order != (
-            "visible",
             ToolKind.MARKETPLACE_ADD.value,
             ToolKind.PLUGIN_INSTALL.value,
+            "visible",
             ToolKind.LOGIN.value,
             ToolKind.NEW_CHAT_URI.value,
             "visible",
