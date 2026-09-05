@@ -293,6 +293,80 @@ def _fake_sdk_module(**attributes: object) -> types.ModuleType:
     return module
 
 
+def _install_minimal_dialogue_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    replies: tuple[str, ...],
+    query_error: Exception | None = None,
+) -> None:
+    """Install a fake SDK that exposes only visible assistant text."""
+
+    class FakeOptions:
+        def __init__(self, **kwargs: object) -> None:
+            self.session_id = cast(str, kwargs["session_id"])
+
+    class FakeTextBlock:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class FakeAssistantMessage:
+        def __init__(self, text: str) -> None:
+            self.content = [FakeTextBlock(text)]
+
+    class FakeResultMessage:
+        def __init__(self, session_id: str) -> None:
+            self.is_error = False
+            self.session_id = session_id
+
+    class FakeClient:
+        def __init__(self, *, options: FakeOptions) -> None:
+            self.options = options
+
+        async def connect(self) -> None:
+            return None
+
+        async def query(self, _prompt: str) -> None:
+            if query_error is not None:
+                raise query_error
+
+        async def receive_response(self) -> object:
+            for reply in replies:
+                yield FakeAssistantMessage(reply)
+            yield FakeResultMessage(self.options.session_id)
+
+        async def interrupt(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+    class FakeHookMatcher:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class FakePermissionResult:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk_module(
+            AssistantMessage=FakeAssistantMessage,
+            ClaudeAgentOptions=FakeOptions,
+            ClaudeSDKClient=FakeClient,
+            HookMatcher=FakeHookMatcher,
+            PermissionResultAllow=FakePermissionResult,
+            PermissionResultDeny=FakePermissionResult,
+            ResultMessage=FakeResultMessage,
+            TextBlock=FakeTextBlock,
+            ToolResultBlock=type("ToolResultBlock", (), {}),
+            ToolUseBlock=type("ToolUseBlock", (), {}),
+            UserMessage=type("UserMessage", (), {}),
+        ),
+    )
+
+
 def test_installation_route_stops_after_public_plugin_connection_and_new_chat() -> None:
     profile = _profile()
     driver = _successful_driver()
@@ -308,6 +382,20 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
     assert installation.expected_new_chat_uri == INSTALLATION_SCENARIO.new_chat_uri
     assert installation.expected_visible_messages == ()
     assert all(call.cwd.name == "work" for call in driver.calls)
+
+
+def test_no_claude_preflight_leaves_last_dialogue_unchanged() -> None:
+    profile = _profile()
+    from sensai_plugin.claude_e2e_profile import write_last_dialogue
+
+    record = write_last_dialogue(profile, replies=("kept",))
+    before = record.read_bytes()
+    runner = _runner(profile, _Driver(_evidence(), authenticated=False))
+
+    with pytest.raises(ProductionE2EError, match="isolated_claude_auth_not_verified"):
+        runner.run()
+
+    assert record.read_bytes() == before
     assert not list((profile / "runs").iterdir())
 
 
@@ -714,6 +802,213 @@ def test_sdk_driver_records_only_allowlisted_error_result_cause(
     assert poison not in receipt.machine_line()
     assert "private.example" not in receipt.machine_line()
     assert "private-session" not in receipt.machine_line()
+
+
+def test_sdk_driver_replaces_one_private_last_dialogue_after_started_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile()
+
+    class FakeOptions:
+        def __init__(self, **kwargs: object) -> None:
+            self.session_id = cast(str, kwargs["session_id"])
+
+    class FakeTextBlock:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class FakeToolUseBlock:
+        pass
+
+    class FakeToolResultBlock:
+        def __init__(self) -> None:
+            self.tool_use_id = "private-tool-use"
+            self.is_error = True
+            self.content = "oauth-token=private"
+
+    class FakeAssistantMessage:
+        def __init__(self, content: list[object]) -> None:
+            self.content = content
+
+    class FakeUserMessage:
+        def __init__(self, content: list[FakeToolResultBlock]) -> None:
+            self.content = content
+
+    class FakeResultMessage:
+        def __init__(self, session_id: str) -> None:
+            self.is_error = True
+            self.session_id = session_id
+            self.errors = ["oauth-token=private"]
+            self.result = "curl https://private.example"
+
+    class FakeClient:
+        def __init__(self, *, options: FakeOptions) -> None:
+            self.options = options
+
+        async def connect(self) -> None:
+            return None
+
+        async def query(self, _prompt: str) -> None:
+            return None
+
+        async def receive_response(self) -> object:
+            yield FakeAssistantMessage([FakeTextBlock("Первый ответ."), FakeToolUseBlock()])
+            yield FakeUserMessage([FakeToolResultBlock()])
+            yield FakeAssistantMessage([FakeTextBlock("Второй ответ.")])
+            yield FakeResultMessage(self.options.session_id)
+
+        async def interrupt(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+    class FakeHookMatcher:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class FakePermissionResult:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    fake_sdk = _fake_sdk_module(
+        AssistantMessage=FakeAssistantMessage,
+        ClaudeAgentOptions=FakeOptions,
+        ClaudeSDKClient=FakeClient,
+        HookMatcher=FakeHookMatcher,
+        PermissionResultAllow=FakePermissionResult,
+        PermissionResultDeny=FakePermissionResult,
+        ResultMessage=FakeResultMessage,
+        TextBlock=FakeTextBlock,
+        ToolResultBlock=FakeToolResultBlock,
+        ToolUseBlock=FakeToolUseBlock,
+        UserMessage=FakeUserMessage,
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    driver = SdkClaudeDriver(first_comparison=True)
+    driver.record_last_dialogue_for(profile)
+    work = profile / "runs" / "manual-run" / "work"
+    work.mkdir(parents=True)
+
+    evidence = asyncio.run(
+        driver._run_agent_async(
+            executable="claude",
+            prompt="Установи Sensai",
+            cwd=work,
+            environment={},
+            timeout_seconds=1,
+            expected_visible_messages=(),
+            expected_session=uuid.uuid4(),
+            expected_new_chat_uri=INSTALLATION_SCENARIO.new_chat_uri,
+        )
+    )
+
+    record = profile.with_name(f"{profile.name}.last-dialogue.txt")
+    assert evidence.returncode == 1
+    assert record.stat().st_mode & 0o777 == 0o600
+    assert record.read_text(encoding="utf-8") == (
+        "Last visible Claude replies:\n"
+        "[1]\n"
+        "Первый ответ.\n\n"
+        "[2]\n"
+        "Второй ответ.\n"
+    )
+    stored = record.read_text(encoding="utf-8")
+    assert "oauth-token" not in stored
+    assert "private.example" not in stored
+    assert "private-tool-use" not in stored
+    assert "Установи Sensai" not in stored
+
+
+def test_sdk_driver_keeps_prior_dialogue_when_query_never_hands_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sensai_plugin.claude_e2e_profile import write_last_dialogue
+
+    profile = _profile()
+    record = write_last_dialogue(profile, replies=("older reply",))
+    before = record.read_bytes()
+    _install_minimal_dialogue_sdk(monkeypatch, replies=(), query_error=OSError("not sent"))
+    driver = SdkClaudeDriver(first_comparison=True)
+    driver.record_last_dialogue_for(profile)
+    work = profile / "runs" / "query-failure" / "work"
+    work.mkdir(parents=True)
+
+    evidence = asyncio.run(
+        driver._run_agent_async(
+            executable="claude",
+            prompt="ignored",
+            cwd=work,
+            environment={},
+            timeout_seconds=1,
+            expected_visible_messages=(),
+            expected_session=uuid.uuid4(),
+            expected_new_chat_uri=INSTALLATION_SCENARIO.new_chat_uri,
+        )
+    )
+
+    assert evidence.sdk_exception_kind is SdkExceptionKind.OS
+    assert record.read_bytes() == before
+
+
+def test_sdk_driver_replaces_prior_dialogue_when_started_attempt_has_no_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sensai_plugin.claude_e2e_profile import write_last_dialogue
+
+    profile = _profile()
+    record = write_last_dialogue(profile, replies=("older reply",))
+    _install_minimal_dialogue_sdk(monkeypatch, replies=())
+    driver = SdkClaudeDriver(first_comparison=True)
+    driver.record_last_dialogue_for(profile)
+    work = profile / "runs" / "zero-reply" / "work"
+    work.mkdir(parents=True)
+
+    asyncio.run(
+        driver._run_agent_async(
+            executable="claude",
+            prompt="ignored",
+            cwd=work,
+            environment={},
+            timeout_seconds=1,
+            expected_visible_messages=(),
+            expected_session=uuid.uuid4(),
+            expected_new_chat_uri=INSTALLATION_SCENARIO.new_chat_uri,
+        )
+    )
+
+    assert record.read_text(encoding="utf-8") == (
+        "Last visible Claude replies:\n[no visible Claude reply]\n"
+    )
+
+
+def test_dialogue_write_failure_still_cleans_the_disposable_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sensai_plugin.claude_production_e2e as production_module
+
+    profile = _profile()
+    _install_minimal_dialogue_sdk(monkeypatch, replies=("reply",))
+    driver = SdkClaudeDriver(first_comparison=True)
+    monkeypatch.setattr(driver, "claude_authenticated", lambda *_args, **_kwargs: True)
+
+    def fail_write(_profile: Path, **_kwargs: object) -> Path:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(production_module, "write_last_dialogue", fail_write)
+    runner = ProductionSensaiE2E(
+        profile=profile,
+        expected_public_readme_sha256="a" * 64,
+        driver=driver,
+        public_readme_validator=lambda _expected: "a" * 64,
+        executable_resolver=lambda: "claude",
+        first_comparison=True,
+    )
+
+    with pytest.raises(ProductionE2EError, match="last_claude_dialogue_not_saved"):
+        runner.compare_first_response()
+
+    assert list((profile / "runs").iterdir()) == []
 
 
 def test_full_run_attaches_before_marketplace_receipt_only_for_that_red_stage() -> None:

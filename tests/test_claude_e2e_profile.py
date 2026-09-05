@@ -15,8 +15,10 @@ from sensai_plugin.claude_e2e_profile import (
     ProvisionDescription,
     SourceTrust,
     create_fresh_run,
+    last_dialogue_path,
     main,
     provision_trusted_current_profile,
+    write_last_dialogue,
 )
 from sensai_plugin.claude_e2e_profile import (
     describe_provision as _describe_provision,
@@ -207,6 +209,69 @@ def test_provision_copies_only_claude_login_not_sensai_or_work_profile(tmp_path:
     assert len(manifest["claude_login_sha256"]) == 64
     assert isinstance(manifest["oauth_account_sha256"], str)
     assert len(manifest["oauth_account_sha256"]) == 64
+
+
+def test_last_dialogue_is_private_adjacent_and_atomically_replaced(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    profile = provision_profile(_profile_path(), source)
+
+    target = write_last_dialogue(
+        profile.root,
+        replies=("Сначала проверю инструкцию.", "Готово."),
+    )
+    first_inode = target.stat().st_ino
+
+    assert target == profile.root.with_name(f"{profile.root.name}.last-dialogue.txt")
+    assert target == last_dialogue_path(profile.root)
+    assert not target.is_relative_to(profile.root / "baseline")
+    assert not target.is_relative_to(profile.root / "runs")
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert target.read_text(encoding="utf-8") == (
+        "Last visible Claude replies:\n"
+        "[1]\n"
+        "Сначала проверю инструкцию.\n\n"
+        "[2]\n"
+        "Готово.\n"
+    )
+
+    write_last_dialogue(profile.root, replies=())
+
+    assert target.stat().st_ino != first_inode
+    assert target.read_text(encoding="utf-8") == (
+        "Last visible Claude replies:\n[no visible Claude reply]\n"
+    )
+
+
+def test_last_dialogue_refuses_to_replace_a_symlink(tmp_path: Path) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    profile = provision_profile(_profile_path(), source)
+    target = last_dialogue_path(profile.root)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("do not replace", encoding="utf-8")
+    target.symlink_to(outside)
+
+    with pytest.raises(ClaudeE2EProfileError, match="last Claude dialogue is unsafe"):
+        write_last_dialogue(profile.root, replies=("reply",))
+
+    assert outside.read_text(encoding="utf-8") == "do not replace"
+
+
+def test_last_dialogue_never_truncates_an_oversized_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source_path(tmp_path)
+    _credentials(source)
+    profile = provision_profile(_profile_path(), source)
+    target = write_last_dialogue(profile.root, replies=("previous",))
+    before = target.read_bytes()
+    monkeypatch.setattr(profile_module, "_MAX_LAST_DIALOGUE_BYTES", 32)
+
+    with pytest.raises(ClaudeE2EProfileError, match="last Claude dialogue is too large"):
+        write_last_dialogue(profile.root, replies=("this reply must not be truncated",))
+
+    assert target.read_bytes() == before
 
 
 def test_normal_provision_rejects_a_world_writable_source(tmp_path: Path) -> None:

@@ -17,7 +17,7 @@ import secrets
 import shutil
 import stat
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -37,6 +37,8 @@ MOUNTED_ROOT = Path("/mnt")
 CLAUDE_E2E_MODEL = CLAUDE_SONNET_5_MODEL
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
 _OWNER_MARKER_NAME = ".sensai-e2e-owner.json"
+_LAST_DIALOGUE_SUFFIX = ".last-dialogue.txt"
+_MAX_LAST_DIALOGUE_BYTES = 1024 * 1024
 _MANIFEST = {
     "auth_records": ["claudeAiOauth"],
     "format_version": 1,
@@ -102,6 +104,17 @@ class ClaudeE2EProfile:
     @property
     def owner_marker(self) -> Path:
         return self.root / _OWNER_MARKER_NAME
+
+    @property
+    def last_dialogue(self) -> Path:
+        """Private, durable record of only the most recent Claude dialogue.
+
+        This deliberately lives beside the persistent profile rather than in
+        its OAuth baseline or in a disposable run.  It is therefore readable
+        after cleanup, but never becomes input to a later Claude run.
+        """
+
+        return self.root.with_name(f"{self.root.name}{_LAST_DIALOGUE_SUFFIX}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -653,6 +666,121 @@ def _load_profile(profile: Path) -> ClaudeE2EProfile:
     if stat.S_ISLNK(runs_stat.st_mode) or not stat.S_ISDIR(runs_stat.st_mode):
         raise ClaudeE2EProfileError("persistent profile run directory is unsafe")
     return result
+
+
+def last_dialogue_path(profile: Path) -> Path:
+    """Return the only durable dialogue file associated with ``profile``.
+
+    The profile itself is validated first.  The returned path is a sibling of
+    the profile: not a source of credentials, not part of its baseline, and
+    not a child of the disposable ``runs`` directory.
+    """
+
+    persistent = _load_profile(profile)
+    parent = persistent.root.parent
+    try:
+        parent_stat = os.lstat(parent)
+    except OSError as error:
+        raise ClaudeE2EProfileError("last Claude dialogue directory is unavailable") from error
+    if (
+        stat.S_ISLNK(parent_stat.st_mode)
+        or not stat.S_ISDIR(parent_stat.st_mode)
+        or parent_stat.st_uid != os.getuid()
+        or stat.S_IMODE(parent_stat.st_mode) & 0o022
+    ):
+        raise ClaudeE2EProfileError("last Claude dialogue directory is unsafe")
+    return persistent.last_dialogue
+
+
+def _format_last_dialogue(replies: Sequence[str]) -> bytes:
+    """Keep one human-readable dialogue without tool or hidden SDK data."""
+
+    pieces = ["Last visible Claude replies:"]
+    if replies:
+        for number, reply in enumerate(replies, start=1):
+            if not isinstance(reply, str):
+                raise ClaudeE2EProfileError("last Claude dialogue has invalid visible text")
+            pieces.extend((f"[{number}]", reply, ""))
+    else:
+        pieces.extend(("[no visible Claude reply]", ""))
+    try:
+        content = "\n".join(pieces).encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ClaudeE2EProfileError("last Claude dialogue has invalid visible text") from error
+    if len(content) > _MAX_LAST_DIALOGUE_BYTES:
+        raise ClaudeE2EProfileError("last Claude dialogue is too large")
+    return content
+
+
+def _assert_replacable_private_dialogue(path: Path) -> None:
+    """Reject a link or a widened old dialogue before replacing it."""
+
+    try:
+        item = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ClaudeE2EProfileError("last Claude dialogue is unavailable") from error
+    if (
+        stat.S_ISLNK(item.st_mode)
+        or not stat.S_ISREG(item.st_mode)
+        or item.st_uid != os.getuid()
+        or stat.S_IMODE(item.st_mode) != 0o600
+    ):
+        raise ClaudeE2EProfileError("last Claude dialogue is unsafe")
+
+
+def write_last_dialogue(
+    profile: Path,
+    *,
+    replies: Sequence[str],
+) -> Path:
+    """Durably and atomically replace the profile's one visible dialogue.
+
+    Call this only after a real Claude attempt has started.  Callers preserve
+    an earlier file for preflight failures that never start Claude.
+    """
+
+    path = last_dialogue_path(profile)
+    _assert_replacable_private_dialogue(path)
+    content = _format_last_dialogue(replies)
+    parent = path.parent
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory = os.open(parent, directory_flags)
+    except OSError as error:
+        raise ClaudeE2EProfileError("last Claude dialogue directory is unavailable") from error
+    temporary_name = f".{path.name}.{secrets.token_hex(16)}.tmp"
+    descriptor: int | None = None
+    published = False
+    try:
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory,
+        )
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = None
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        _assert_replacable_private_dialogue(path)
+        os.replace(temporary_name, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+        published = True
+        _assert_replacable_private_dialogue(path)
+        os.fsync(directory)
+    except OSError as error:
+        raise ClaudeE2EProfileError("last Claude dialogue could not be saved") from error
+    finally:
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
+        if not published:
+            with suppress(OSError):
+                os.unlink(temporary_name, dir_fd=directory)
+        os.close(directory)
+    return path
 
 
 def _load_baseline_credentials(path: Path) -> bytes:

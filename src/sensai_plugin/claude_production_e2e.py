@@ -30,7 +30,11 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
+from sensai_plugin.claude_e2e_profile import (
+    ClaudeE2ERun,
+    create_fresh_run,
+    write_last_dialogue,
+)
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_LINUX_ACTIONS,
     CLAUDE_SONNET_5_MODEL,
@@ -1526,6 +1530,12 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
 
     def __init__(self, *, first_comparison: bool = False) -> None:
         self._first_comparison = first_comparison
+        self._dialogue_profile: Path | None = None
+
+    def record_last_dialogue_for(self, profile: Path) -> None:
+        """Bind the next real SDK attempt to one private local transcript."""
+
+        self._dialogue_profile = profile
 
     def run_agent(
         self,
@@ -1621,6 +1631,10 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         sdk_result_kind = SdkResultKind.NONE
         sdk_result_cause = SdkResultCause.NONE
         sdk_cleanup_kind = SdkCleanupKind.NONE
+        visible_replies: list[str] = []
+        attempt_started = False
+        dialogue_profile = self._dialogue_profile
+        dialogue_write_error: Exception | None = None
 
         async def force_permission(
             _hook_input: Any, tool_use_id: str | None, _hook_context: Any
@@ -1693,13 +1707,18 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
 
             async def receive() -> None:
                 nonlocal first_text_kind, result_seen, session_verified, terminal_error
-                nonlocal sdk_result_kind, sdk_result_cause
+                nonlocal sdk_result_kind, sdk_result_cause, attempt_started
                 await client.connect()
                 await client.query(prompt)
+                # ``query`` returning confirms the SDK accepted the handoff
+                # to Claude. A later result with no TextBlock still replaces
+                # the previous record with an explicit no-reply dialogue.
+                attempt_started = True
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
+                                visible_replies.append(block.text)
                                 if first_text_kind is FirstTextKind.NONE:
                                     first_text_kind = _classify_first_text(block.text)
                                 accumulator = _TextAccumulator.new()
@@ -1745,10 +1764,21 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                 disconnected = True
             browser_cleaned = handoff is None or handoff.cleanup()
             child_absent = _owned_run_child_absent(cwd.parent)
+            if attempt_started and dialogue_profile is not None:
+                try:
+                    write_last_dialogue(
+                        dialogue_profile,
+                        replies=visible_replies,
+                    )
+                except Exception as error:
+                    dialogue_write_error = error
             if not child_absent:
                 raise ProductionE2EError("claude_sdk_child_remained")
             if not browser_cleaned:
                 raise ProductionE2EError("oauth_browser_cleanup_failed")
+
+        if dialogue_write_error is not None:
+            raise ProductionE2EError("last_claude_dialogue_not_saved") from dialogue_write_error
 
         successful = tuple(item.kind for item in results if item.succeeded)
         completed_cleanly = (
@@ -1917,6 +1947,7 @@ class ProductionSensaiE2E:
         digest = self._public_readme_validator(self._expected_public_readme_sha256)
         executable = self._executable_resolver()
         with create_fresh_run(self._profile) as run:
+            self._bind_last_dialogue_recording()
             if not self._driver.claude_authenticated(
                 _auth_status_command(executable),
                 cwd=run.work,
@@ -1959,6 +1990,7 @@ class ProductionSensaiE2E:
             timeout_seconds=MCP_STATUS_TIMEOUT_SECONDS,
         ):
             raise ProductionE2EError("isolated_claude_auth_not_verified")
+        self._bind_last_dialogue_recording()
         new_chat_uri = INSTALLATION_SCENARIO.new_chat_uri
         installation = self._driver.run_agent(
             _agent_command(
@@ -1981,6 +2013,16 @@ class ProductionSensaiE2E:
                 raise ProductionE2EError(str(error), before_marketplace_receipt=receipt) from error
             raise
         return ProductionE2EReport(True, True, True, True, True, True)
+
+    def _bind_last_dialogue_recording(self) -> None:
+        """Keep exact replies only for the real local SDK dialogue.
+
+        Test doubles return pre-built evidence and do not contact Claude, so
+        they deliberately do not create or replace the persistent record.
+        """
+
+        if isinstance(self._driver, SdkClaudeDriver):
+            self._driver.record_last_dialogue_for(self._profile)
 
     @staticmethod
     def _require_installation(evidence: AgentEvidence) -> None:
