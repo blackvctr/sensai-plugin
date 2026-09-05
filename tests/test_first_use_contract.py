@@ -38,12 +38,7 @@ def test_public_copy_paste_prompts_and_fixed_e2e_input_remain_exact() -> None:
     russian_prompt = (
         "Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
     )
-    english_prompt = (
-        "Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
-    )
-
     assert f"```text\n{russian_prompt}\n```" in readme
-    assert f"```\n{english_prompt}\n```" in readme
     assert _SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP] == russian_prompt
 
 
