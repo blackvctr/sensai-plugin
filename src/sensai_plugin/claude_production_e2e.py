@@ -30,7 +30,6 @@ from urllib.request import Request, urlopen
 from sensai_plugin.claude_e2e_profile import ClaudeE2ERun, create_fresh_run
 from sensai_plugin.installation_e2e_contract import (
     CLAUDE_SONNET_5_MODEL,
-    CLAUDE_LINUX_COMMANDS,
     PublicReadmeContract,
     _public_contract_from_markdown,
 )
@@ -770,14 +769,16 @@ def _is_exact_public_sensai_inventory(entries: object) -> bool:
     )
 
 
-def _e2e_allowed_tools(new_chat_uri: str) -> tuple[str, ...]:
-    marketplace_add, plugin_install, sensai_login = CLAUDE_LINUX_COMMANDS
+def _e2e_allowed_tools(claude_linux_actions: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
+    marketplace_add, plugin_install, sensai_login, new_chat = (
+        shlex.join(action) for action in claude_linux_actions
+    )
     return (
         _E2E_WEBFETCH_PERMISSION,
         f"Bash({marketplace_add})",
         f"Bash({plugin_install})",
         f"Bash({sensai_login})",
-        f"Bash({_new_chat_bash_command(new_chat_uri)})",
+        f"Bash({new_chat})",
     )
 
 
@@ -786,9 +787,13 @@ def _new_chat_bash_command(new_chat_uri: str) -> str:
 
 
 def _agent_command(
-    executable: str, *, prompt: str, session: uuid.UUID, new_chat_uri: str
+    executable: str,
+    *,
+    prompt: str,
+    session: uuid.UUID,
+    claude_linux_actions: tuple[tuple[str, ...], ...],
 ) -> tuple[str, ...]:
-    allowed_tools = _e2e_allowed_tools(new_chat_uri)
+    allowed_tools = _e2e_allowed_tools(claude_linux_actions)
     command = (
         executable,
         "-p",
@@ -866,7 +871,7 @@ class ProductionSensaiE2E:
                 executable,
                 prompt=contract.russian_install_prompt,
                 session=session,
-                new_chat_uri=new_chat_uri,
+                claude_linux_actions=contract.claude_linux_actions,
             ),
             cwd=run.work,
             environment=run.environment,

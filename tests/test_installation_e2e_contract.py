@@ -57,18 +57,18 @@ def test_rejects_unknown_duplicate_or_mismatched_install_manifest_data() -> None
     markdown = README_PATH.read_text(encoding="utf-8")
     altered_documents = (
         markdown.replace(
-            '"schema": "sensai-install-v1",',
-            '"schema": "sensai-install-v1",\n  "unexpected": true,',
+            '"schema": "sensai-install-v2",',
+            '"schema": "sensai-install-v2",\n  "unexpected": true,',
             1,
         ),
         markdown.replace(
-            '"schema": "sensai-install-v1",',
-            '"schema": "sensai-install-v1",\n  "schema": "sensai-install-v1",',
+            '"schema": "sensai-install-v2",',
+            '"schema": "sensai-install-v2",\n  "schema": "sensai-install-v2",',
             1,
         ),
         markdown.replace(
-            '"plugin": "sensai@sensai",',
-            '"plugin": "another-plugin",',
+            '"sensai@sensai",',
+            '"another-plugin",',
             1,
         ),
     )

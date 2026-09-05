@@ -28,7 +28,7 @@ def test_public_readme_uses_a_concise_strict_installation_manifest() -> None:
     contract = _public_contract_from_markdown(readme)
 
     assert "## Installation manifest" in readme
-    assert '"schema": "sensai-install-v1"' in readme
+    assert '"schema": "sensai-install-v2"' in readme
     assert "Installation after explicit request (AI agent part)" not in readme
     assert "#### Known problems" not in readme
     assert "curl -fsSL" not in readme
@@ -54,16 +54,15 @@ def test_manifest_keeps_only_typed_local_installation_values() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
 
     for value in (
-        '"repository": "blackvctr/sensai-plugin"',
-        '"plugin": "sensai@sensai"',
-        '"scope": "user"',
-        '"server": "plugin:sensai:sensai"',
-        '"terminal": "linux-script"',
-        '"server": "sensai"',
+        '"id": "marketplace_add"',
+        '"tool": "Bash"',
+        '"argv": ["claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]',
+        '"argv": ["claude", "plugin", "install", "sensai@sensai", "--scope", "user"]',
+        '"argv": ["script", "-q", "-c", "claude mcp login plugin:sensai:sensai", "/dev/null"]',
+        '"argv": ["codex", "mcp", "login", "sensai"]',
     ):
         assert value in readme
-    assert "claude plugin marketplace add" not in readme
-    assert "claude mcp login" not in readme
+    assert '"command"' not in readme
 
 
 def test_sensai_skill_description_covers_a_person_starting_consultation() -> None:

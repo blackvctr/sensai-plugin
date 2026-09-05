@@ -25,9 +25,31 @@ This JSON document records the public installation flow. It is data for an alrea
 
 ```json
 {
-  "schema": "sensai-install-v1",
+  "schema": "sensai-install-v2",
   "hosts": {
     "claude_desktop": {
+      "linux_actions": [
+        {
+          "id": "marketplace_add",
+          "tool": "Bash",
+          "argv": ["claude", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]
+        },
+        {
+          "id": "plugin_install",
+          "tool": "Bash",
+          "argv": ["claude", "plugin", "install", "sensai@sensai", "--scope", "user"]
+        },
+        {
+          "id": "sensai_login",
+          "tool": "Bash",
+          "argv": ["script", "-q", "-c", "claude mcp login plugin:sensai:sensai", "/dev/null"]
+        },
+        {
+          "id": "new_chat",
+          "tool": "Bash",
+          "argv": ["xdg-open", "claude://code/new?q=%D0%9F%D1%80%D0%BE%D0%BA%D0%BE%D0%BD%D1%81%D1%83%D0%BB%D1%8C%D1%82%D0%B8%D1%80%D1%83%D0%B9%D1%81%D1%8F%20%D1%81%20Sensai.%20%D0%A1%D0%BD%D0%B0%D1%87%D0%B0%D0%BB%D0%B0%20%D0%B7%D0%B0%D0%B4%D0%B0%D0%B9%20%D0%BC%D0%BD%D0%B5%20%D0%B2%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D1%8B%20%D0%BE%20%D0%BC%D0%BE%D0%B5%D0%B9%20%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B5%2C%20%D0%BE%D0%B1%D1%8B%D1%87%D0%BD%D1%8B%D1%85%20%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B0%D1%85%20%D0%B8%20%D0%BF%D0%BE%D0%B2%D1%82%D0%BE%D1%80%D1%8F%D1%8E%D1%89%D0%B8%D1%85%D1%81%D1%8F%20%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%D1%85."]
+        }
+      ],
       "russian": {
         "visible_messages": [
           {
@@ -38,43 +60,25 @@ This JSON document records the public installation flow. It is data for an alrea
             "phase": "after_new_chat_attempt",
             "text": "Sensai установлен. Я попытался открыть новый разговор с подготовленным сообщением. Если он появился, нажмите Enter."
           }
-        ],
-        "steps": [
-          {
-            "kind": "marketplace_add",
-            "repository": "blackvctr/sensai-plugin"
-          },
-          {
-            "kind": "plugin_install",
-            "plugin": "sensai@sensai",
-            "scope": "user"
-          },
-          {
-            "kind": "sensai_login",
-            "server": "plugin:sensai:sensai",
-            "terminal": "linux-script"
-          },
-          {
-            "kind": "new_chat_uri",
-            "request": "Проконсультируйся с Sensai. Сначала задай мне вопросы о моей работе, обычных программах и повторяющихся задачах.",
-            "uri": "claude://code/new?q=%D0%9F%D1%80%D0%BE%D0%BA%D0%BE%D0%BD%D1%81%D1%83%D0%BB%D1%8C%D1%82%D0%B8%D1%80%D1%83%D0%B9%D1%81%D1%8F%20%D1%81%20Sensai.%20%D0%A1%D0%BD%D0%B0%D1%87%D0%B0%D0%BB%D0%B0%20%D0%B7%D0%B0%D0%B4%D0%B0%D0%B9%20%D0%BC%D0%BD%D0%B5%20%D0%B2%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D1%8B%20%D0%BE%20%D0%BC%D0%BE%D0%B5%D0%B9%20%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B5%2C%20%D0%BE%D0%B1%D1%8B%D1%87%D0%BD%D1%8B%D1%85%20%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B0%D1%85%20%D0%B8%20%D0%BF%D0%BE%D0%B2%D1%82%D0%BE%D1%80%D1%8F%D1%8E%D1%89%D0%B8%D1%85%D1%81%D1%8F%20%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%D1%85."
-          }
         ]
       }
     },
     "chatgpt_desktop": {
-      "steps": [
+      "actions": [
         {
-          "kind": "marketplace_add",
-          "repository": "blackvctr/sensai-plugin"
+          "id": "marketplace_add",
+          "tool": "Bash",
+          "argv": ["codex", "plugin", "marketplace", "add", "blackvctr/sensai-plugin"]
         },
         {
-          "kind": "plugin_install",
-          "plugin": "sensai@sensai"
+          "id": "plugin_install",
+          "tool": "Bash",
+          "argv": ["codex", "plugin", "add", "sensai@sensai"]
         },
         {
-          "kind": "sensai_login",
-          "server": "sensai"
+          "id": "sensai_login",
+          "tool": "Bash",
+          "argv": ["codex", "mcp", "login", "sensai"]
         }
       ]
     }

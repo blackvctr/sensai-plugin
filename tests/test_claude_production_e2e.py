@@ -32,6 +32,7 @@ from sensai_plugin.claude_production_e2e import (
     fetch_public_readme_contract,
 )
 from sensai_plugin.installation_e2e_contract import (
+    CLAUDE_LINUX_ACTIONS,
     PublicReadmeContract,
     _public_contract_from_markdown,
 )
@@ -256,12 +257,11 @@ def test_installation_route_stops_after_public_plugin_connection_and_new_chat() 
 
 
 def test_agent_command_exposes_only_exact_e2e_webfetch_and_installation_actions() -> None:
-    new_chat_uri = "claude://code/new?q=exact-request"
     command = _agent_command(
         "claude",
         prompt="Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md",
         session=uuid.uuid4(),
-        new_chat_uri=new_chat_uri,
+        claude_linux_actions=tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS),
     )
 
     allowed = command[command.index("--allowed-tools") + 1].split(",")
@@ -269,8 +269,8 @@ def test_agent_command_exposes_only_exact_e2e_webfetch_and_installation_actions(
         "WebFetch(domain:raw.githubusercontent.com)",
         "Bash(claude plugin marketplace add blackvctr/sensai-plugin)",
         "Bash(claude plugin install sensai@sensai --scope user)",
-        'Bash(script -q -c "claude mcp login plugin:sensai:sensai" /dev/null)',
-        f"Bash(xdg-open '{new_chat_uri}')",
+        "Bash(script -q -c 'claude mcp login plugin:sensai:sensai' /dev/null)",
+        f"Bash(xdg-open '{CLAUDE_LINUX_ACTIONS[-1][1][1]}')",
     ]
     assert command[command.index("--tools") + 1] == "WebFetch,Bash"
     assert command[command.index("--permission-prompts") + 1] == "none"
