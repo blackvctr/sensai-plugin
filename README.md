@@ -9,25 +9,13 @@ Sensai may return advice, architecture, detailed implementation instructions, an
 1. You need [ChatGPT Desktop](https://chatgpt.com/download/) with an OpenAI subscription, or [Claude Desktop](https://claude.ai/download) with an Anthropic subscription.
 2. In ChatGPT Desktop, make sure you are on the Codex tab. In Claude Desktop, make sure you are on the Code tab.
 3. Use a strong model, especially while installing the plugin. At the time of writing, use GPT-5.6 Terra rather than Luna; in Claude Desktop, use Opus rather than Sonnet.
-4. Start a new chat and copy one of these instructions. Choose the Russian
-   version for a Russian conversation and the English version for an English
-   conversation.
-
-Russian:
+4. Start a new chat with this instruction:
 
 ```text
 Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
 ```
 
-English:
-
-```
-Install Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
-```
-
 ## Installation after explicit request (AI agent part)
-
-Before calling any tool or taking an installation step, make your first visible reply in the language of the person's request. For a successful Russian Claude Desktop installation, use exactly the two Russian messages in the Claude Desktop section, in the stated order.
 
 Here and below, make every step convenient for the person. English may be used for messages to Sensai to save tokens, unless the person needs to see the message. Unless you clearly know otherwise, assume the person is a nontechnical specialist: explain what is happening in plain language and adapt your terminology to their level. Treat the person's time as especially valuable: don't ask them to perform manually actions you can do yourself, though you can inform the person if it makes sense. Avoid technical terms and unnecessary interface clicks. Leave the person only actions that need their own account choice or approval. Nothing in this process should require them to know what `PATH` is.
 
@@ -57,16 +45,6 @@ For another language, translate both the visible sentence and `Run` inside the l
 
 ### Claude Desktop
 
-#### Exact Russian messages for a successful Claude installation
-
-When the person used the Russian public installation request, write exactly two visible messages during a successful installation. Do not add a third message to the person.
-
-**First visible message — before any action and Google sign-in:**
-
-```text
-Я сам установлю Sensai. Сейчас откроется обычное окно Google: выберите свой аккаунт и подтвердите доступ, чтобы Sensai мог продолжать этот рабочий разговор в следующих чатах.
-```
-
 ```bash
 claude plugin marketplace add blackvctr/sensai-plugin
 claude plugin install sensai@sensai --scope user
@@ -77,37 +55,28 @@ Sign-in needs a terminal on its input, and your Bash tool has none: run bare, `c
 ```bash
 script -q /dev/null claude mcp login plugin:sensai:sensai                     # macOS
 script -q -c "claude mcp login plugin:sensai:sensai" /dev/null                # Linux
+start "" /min cmd /c claude mcp login plugin:sensai:sensai                    # Windows, CMD
+Start-Process cmd -ArgumentList '/c','claude mcp login plugin:sensai:sensai' -WorkingDirectory 'C:\' -WindowStyle Minimized    # Windows, PowerShell
 ```
 
-The argument order differs between macOS and Linux because they ship different `script` implementations. On Windows, run this one PowerShell block as a unit:
+The argument order differs between macOS and Linux because they ship different `script` implementations. Windows needs two lines because it ships two shells: in PowerShell `start` is an alias for `Start-Process`, which reads the empty `""` title as the program to run, so the CMD line fails there. Pick by shell, not by operating system. `-WorkingDirectory 'C:\'` matters when your shell sits on a path Windows cannot use as a working directory, such as a WSL mount; without it the launch dies with `Windows cannot find '\\'` and writes nothing to any log. On macOS and Linux no window appears at all; on Windows a minimized console opens and closes itself. Either way the person only chooses their Google account in the browser, and the command finishes on its own.
 
-```powershell
-# Windows, PowerShell
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($userPath) { $env:Path = "$userPath;$env:Path" }
-$claude = (Get-Command claude.exe -CommandType Application -ErrorAction Stop).Source
-$command = '""{0}" mcp login plugin:sensai:sensai"' -f $claude
-$login = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', $command) -WorkingDirectory $env:USERPROFILE -WindowStyle Hidden -Wait -PassThru
-if ($login.ExitCode -ne 0) { throw 'Sensai sign-in did not complete.' }
-& $claude mcp get plugin:sensai:sensai
+Confirm the result with `claude mcp get plugin:sensai:sensai`. Before sign-in it reports `Status: ! Needs authentication`; after a successful sign-in that line changes. Treat the changed status as the signal to continue, not the login command's own exit.
+
+Then open the new session yourself, again using the line for the shell you are running in:
+
+```bash
+start "" "claude://code/new?q=%2Fsensai%3Asensai"         # Windows, CMD
+Start-Process 'claude://code/new?q=%2Fsensai%3Asensai'    # Windows, PowerShell
+open "claude://code/new?q=%2Fsensai%3Asensai"             # macOS
+xdg-open "claude://code/new?q=%2Fsensai%3Asensai"         # Linux
 ```
 
-The PowerShell block temporarily prepends the Windows user's `Path`, then finds the Windows `claude.exe` program before starting anything. This matters when PowerShell was launched from WSL, whose copied environment can omit the Windows user path and ordinary executable-extension lookup; it does not change the saved Windows environment. The block starts that exact program through `cmd.exe`, which gives the login command a terminal, keeps the window hidden, and waits for it to finish. The final `mcp get` runs through the same Windows program and user profile. Before sign-in it reports `Status: ! Needs authentication`; after a successful sign-in that line changes. Treat the changed status as the signal to continue, not the login command's exit alone. The person only chooses their Google account in the browser. A real later sign-in and its changed `mcp get` status are still required to prove this Windows path works.
+A new Claude Code session opens with `/sensai:sensai` already in its composer.
 
-Then open a new Claude Code session with the ordinary request matching the person's language:
+Then tell the person, in one complete localized sentence, that Sensai is installed and has just opened in a new chat, and that they only need to press Enter there if the prepared message has not been sent on its own.
 
-- Russian: [Проконсультируйся с Sensai. Сначала задай мне вопросы о моей работе, обычных программах и повторяющихся задачах.](claude://code/new?q=%D0%9F%D1%80%D0%BE%D0%BA%D0%BE%D0%BD%D1%81%D1%83%D0%BB%D1%8C%D1%82%D0%B8%D1%80%D1%83%D0%B9%D1%81%D1%8F%20%D1%81%20Sensai.%20%D0%A1%D0%BD%D0%B0%D1%87%D0%B0%D0%BB%D0%B0%20%D0%B7%D0%B0%D0%B4%D0%B0%D0%B9%20%D0%BC%D0%BD%D0%B5%20%D0%B2%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D1%8B%20%D0%BE%20%D0%BC%D0%BE%D0%B5%D0%B9%20%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B5%2C%20%D0%BE%D0%B1%D1%8B%D1%87%D0%BD%D1%8B%D1%85%20%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B0%D1%85%20%D0%B8%20%D0%BF%D0%BE%D0%B2%D1%82%D0%BE%D1%80%D1%8F%D1%8E%D1%89%D0%B8%D1%85%D1%81%D1%8F%20%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%D1%85.)
-- English: [Consult Sensai. First ask me about my work, usual apps, and recurring tasks.](claude://code/new?q=Consult%20Sensai.%20First%20ask%20me%20about%20my%20work%2C%20usual%20apps%2C%20and%20recurring%20tasks.)
-
-Each link only fills a new-chat composer; it does not send the request. After attempting the link, use the second exact Russian message below for a successful Russian installation. For other languages, give one complete localized sentence saying that Sensai is installed and a new chat has been opened, and that the person only needs to press Enter there if the prepared message has not been sent on its own.
-
-**Second visible message — after Sensai is connected and after attempting to open the new-chat link above:**
-
-```text
-Sensai установлен. Я попытался открыть новый разговор с подготовленным сообщением. Если он появился, нажмите Enter.
-```
-
-If the link does not open a new session, tell the person instead to open a new chat and send the matching ordinary request above.
+If the command fails, or no new session appears, tell the person instead to open a new chat and send `/sensai:sensai` there.
 
 #### Known problems
 
@@ -150,7 +119,6 @@ Recover from these yourself and explain the reason to the person in their langua
    part of this flow. When `claude mcp get plugin:sensai:sensai` reports `Needs authentication`, it is
    Sensai asking, not the CLI.
 
-6. If sign-in reports exactly `Client ID '<id>' not found`, run `claude mcp logout plugin:sensai:sensai`
-   and repeat the sign-in command once. This is one exceptional recovery for that verified error,
-   not a general retry loop. Handle it silently and continue: the person needs a second trip through
-   the Google window, nothing more.
+6. If sign-in fails with `Client ID '<id>' not found`, run `claude mcp logout plugin:sensai:sensai`
+   and repeat the sign-in command; it then succeeds. Handle this silently and continue: the person
+   needs a second trip through the Google window, nothing more.
