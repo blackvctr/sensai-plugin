@@ -37,6 +37,7 @@ from sensai_plugin.claude_production_e2e import (
     SdkClaudeDriver,
     SdkCleanupKind,
     SdkExceptionKind,
+    SdkResultCause,
     SdkResultKind,
     TerminalResultKind,
     TextEvidence,
@@ -53,6 +54,7 @@ from sensai_plugin.claude_production_e2e import (
     _is_exact_public_sensai_inventory,
     _is_exact_public_sensai_mcp_status,
     _pre_marketplace_failure_receipt,
+    _sdk_result_cause,
     fetch_public_readme_contract,
     fetch_public_readme_sha256,
 )
@@ -283,6 +285,15 @@ def _parse_raw(payload: bytes) -> AgentEvidence:
     )
 
 
+def _fake_sdk_module(**attributes: object) -> types.ModuleType:
+    """Build a tiny SDK module for driver tests without type escapes."""
+
+    module = types.ModuleType("claude_agent_sdk")
+    for name, value in attributes.items():
+        setattr(module, name, value)
+    return module
+
+
 def test_installation_route_stops_after_public_plugin_connection_and_new_chat() -> None:
     profile = _profile()
     driver = _successful_driver()
@@ -439,6 +450,75 @@ def test_pre_marketplace_receipt_keeps_only_categories_when_exception_is_poisone
     assert "private.example" not in receipt.machine_line()
 
 
+@pytest.mark.parametrize(
+    ("terminal_reason", "subtype", "api_error_status", "expected"),
+    [
+        ("api_error", "success", None, SdkResultCause.API_ERROR),
+        ("max_turns", "success", None, SdkResultCause.TURN_LIMIT),
+        ("aborted_tools", "success", None, SdkResultCause.INTERRUPTED),
+        (None, "error_during_execution", None, SdkResultCause.EXECUTION),
+        (None, "error_max_budget_usd", None, SdkResultCause.BUDGET),
+        (
+            None,
+            "error_max_structured_output_retries",
+            None,
+            SdkResultCause.STRUCTURED_OUTPUT_RETRIES,
+        ),
+        (None, "error_max_turns", None, SdkResultCause.TURN_LIMIT),
+        (None, "error_permission", None, SdkResultCause.PERMISSION),
+        (None, "success", 429, SdkResultCause.API_ERROR),
+        ("future_reason", "error_max_turns", None, SdkResultCause.TURN_LIMIT),
+        (None, "unrecognized_error", 418, SdkResultCause.OTHER),
+    ],
+)
+def test_sdk_result_cause_uses_only_allowlisted_structured_fields(
+    terminal_reason: str | None,
+    subtype: str,
+    api_error_status: int | None,
+    expected: SdkResultCause,
+) -> None:
+    poison = "oauth-token=private https://private.example/path -- command"
+    message = types.SimpleNamespace(
+        is_error=True,
+        terminal_reason=terminal_reason,
+        subtype=subtype,
+        api_error_status=api_error_status,
+        errors=[poison],
+        result=poison,
+        session_id=poison,
+    )
+
+    assert _sdk_result_cause(message) is expected
+
+
+def test_sdk_result_cause_is_present_in_receipt_without_free_form_result_data() -> None:
+    poison = "oauth-token=private https://private.example/path -- command"
+    message = types.SimpleNamespace(
+        is_error=True,
+        terminal_reason="api_error",
+        subtype="success",
+        api_error_status=429,
+        errors=[poison],
+        result=poison,
+        session_id=poison,
+    )
+    evidence = replace(
+        _evidence(),
+        returncode=1,
+        exit_stage=ExitStage.BEFORE_MARKETPLACE,
+        sdk_result_kind=SdkResultKind.ERROR,
+        sdk_result_cause=_sdk_result_cause(message),
+    )
+
+    receipt = _pre_marketplace_failure_receipt(evidence)
+
+    assert receipt is not None
+    assert receipt.sdk_result_cause is SdkResultCause.API_ERROR
+    assert "sdk_result_cause:api_error" in receipt.machine_line()
+    assert poison not in receipt.machine_line()
+    assert "private.example" not in receipt.machine_line()
+
+
 def test_sdk_driver_records_poisoned_exception_as_a_closed_category(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -476,18 +556,19 @@ def test_sdk_driver_records_poisoned_exception_as_a_closed_category(
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-    fake_sdk = types.ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = type("AssistantMessage", (), {})
-    fake_sdk.ClaudeAgentOptions = FakeOptions
-    fake_sdk.ClaudeSDKClient = FakeClient
-    fake_sdk.HookMatcher = FakeHookMatcher
-    fake_sdk.PermissionResultAllow = FakePermissionResult
-    fake_sdk.PermissionResultDeny = FakePermissionResult
-    fake_sdk.ResultMessage = type("ResultMessage", (), {})
-    fake_sdk.TextBlock = type("TextBlock", (), {})
-    fake_sdk.ToolResultBlock = type("ToolResultBlock", (), {})
-    fake_sdk.ToolUseBlock = type("ToolUseBlock", (), {})
-    fake_sdk.UserMessage = type("UserMessage", (), {})
+    fake_sdk = _fake_sdk_module(
+        AssistantMessage=type("AssistantMessage", (), {}),
+        ClaudeAgentOptions=FakeOptions,
+        ClaudeSDKClient=FakeClient,
+        HookMatcher=FakeHookMatcher,
+        PermissionResultAllow=FakePermissionResult,
+        PermissionResultDeny=FakePermissionResult,
+        ResultMessage=type("ResultMessage", (), {}),
+        TextBlock=type("TextBlock", (), {}),
+        ToolResultBlock=type("ToolResultBlock", (), {}),
+        ToolUseBlock=type("ToolUseBlock", (), {}),
+        UserMessage=type("UserMessage", (), {}),
+    )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     work = tmp_path / "run" / "work"
     work.mkdir(parents=True)
@@ -515,6 +596,93 @@ def test_sdk_driver_records_poisoned_exception_as_a_closed_category(
     assert receipt.sdk_cleanup is SdkCleanupKind.DISCONNECT_FAILED
     assert poison not in receipt.machine_line()
     assert "private.example" not in receipt.machine_line()
+
+
+def test_sdk_driver_records_only_allowlisted_error_result_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poison = "oauth-token=private https://private.example/path -- command"
+
+    class FakeOptions:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeResultMessage:
+        def __init__(self) -> None:
+            self.is_error = True
+            self.terminal_reason = "api_error"
+            self.subtype = "success"
+            self.api_error_status = 429
+            self.errors = [poison]
+            self.result = poison
+            self.session_id = "private-session"
+
+    class FakeClient:
+        def __init__(self, *, options: object) -> None:
+            del options
+
+        async def connect(self) -> None:
+            return None
+
+        async def query(self, _prompt: str) -> None:
+            return None
+
+        async def receive_response(self) -> object:
+            yield FakeResultMessage()
+
+        async def interrupt(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+    class FakeHookMatcher:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class FakePermissionResult:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    fake_sdk = _fake_sdk_module(
+        AssistantMessage=type("AssistantMessage", (), {}),
+        ClaudeAgentOptions=FakeOptions,
+        ClaudeSDKClient=FakeClient,
+        HookMatcher=FakeHookMatcher,
+        PermissionResultAllow=FakePermissionResult,
+        PermissionResultDeny=FakePermissionResult,
+        ResultMessage=FakeResultMessage,
+        TextBlock=type("TextBlock", (), {}),
+        ToolResultBlock=type("ToolResultBlock", (), {}),
+        ToolUseBlock=type("ToolUseBlock", (), {}),
+        UserMessage=type("UserMessage", (), {}),
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    work = tmp_path / "run" / "work"
+    work.mkdir(parents=True)
+
+    evidence = asyncio.run(
+        SdkClaudeDriver(first_comparison=True)._run_agent_async(
+            executable="claude",
+            prompt="fixed test input",
+            cwd=work,
+            environment={},
+            timeout_seconds=1,
+            expected_visible_messages=(),
+            expected_session=uuid.uuid4(),
+            expected_new_chat_uri=INSTALLATION_SCENARIO.new_chat_uri,
+        )
+    )
+
+    assert evidence.sdk_result_kind is SdkResultKind.ERROR
+    assert evidence.sdk_result_cause is SdkResultCause.API_ERROR
+    receipt = _pre_marketplace_failure_receipt(evidence)
+    assert receipt is not None
+    assert receipt.sdk_result_cause is SdkResultCause.API_ERROR
+    assert poison not in str(evidence)
+    assert poison not in receipt.machine_line()
+    assert "private.example" not in receipt.machine_line()
+    assert "private-session" not in receipt.machine_line()
 
 
 def test_full_run_attaches_before_marketplace_receipt_only_for_that_red_stage() -> None:
@@ -1314,6 +1482,7 @@ def test_cli_emits_only_the_closed_early_failure_receipt(
         stage=ExitStage.BEFORE_MARKETPLACE,
         sdk_exception=SdkExceptionKind.RUNTIME,
         sdk_result=SdkResultKind.NONE,
+        sdk_result_cause=SdkResultCause.NONE,
         sdk_cleanup=SdkCleanupKind.NONE,
         first_text=FirstTextKind.REFUSAL,
         first_tool_intent=ToolKind.PUBLIC_README_FETCH,

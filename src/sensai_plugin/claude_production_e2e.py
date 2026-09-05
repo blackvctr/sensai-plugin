@@ -273,6 +273,26 @@ class SdkResultKind(StrEnum):
     OTHER = "other"
 
 
+class SdkResultCause(StrEnum):
+    """Safe, closed reason for an error ``ResultMessage`` from the SDK.
+
+    The SDK result also carries ``errors`` and ``result`` prose.  They are
+    deliberately not read here: either field can contain Claude output,
+    command text, URLs, or authentication details.  This enum is derived
+    only from documented structured fields with a fixed allowlist.
+    """
+
+    NONE = "none"
+    API_ERROR = "api_error"
+    EXECUTION = "execution"
+    BUDGET = "budget"
+    STRUCTURED_OUTPUT_RETRIES = "structured_output_retries"
+    TURN_LIMIT = "turn_limit"
+    PERMISSION = "permission"
+    INTERRUPTED = "interrupted"
+    OTHER = "other"
+
+
 class SdkCleanupKind(StrEnum):
     """Closed result of cleanup after a local SDK run."""
 
@@ -302,6 +322,7 @@ class PreMarketplaceFailureReceipt:
     stage: ExitStage
     sdk_exception: SdkExceptionKind
     sdk_result: SdkResultKind
+    sdk_result_cause: SdkResultCause
     sdk_cleanup: SdkCleanupKind
     first_text: FirstTextKind
     first_tool_intent: ToolKind | None
@@ -315,7 +336,8 @@ class PreMarketplaceFailureReceipt:
         return (
             "before_marketplace="
             f"kind:{self.kind},stage:{self.stage},sdk_exception:{self.sdk_exception},"
-            f"sdk_result:{self.sdk_result},sdk_cleanup:{self.sdk_cleanup},"
+            f"sdk_result:{self.sdk_result},sdk_result_cause:{self.sdk_result_cause},"
+            f"sdk_cleanup:{self.sdk_cleanup},"
             f"first_text:{self.first_text},"
             f"first_tool:{first_tool},first_denied:{first_denied}"
         )
@@ -331,6 +353,25 @@ _TERMINAL_RESULT_SUBTYPES = {
 }
 _TERMINAL_RESULT_REASONS = {"api_error": TerminalResultKind.API_ERROR}
 _MAX_TERMINAL_ERROR_COUNT = 32
+_SDK_RESULT_SUBTYPES = {
+    "error_during_execution": SdkResultCause.EXECUTION,
+    "error_max_budget_usd": SdkResultCause.BUDGET,
+    "error_max_structured_output_retries": SdkResultCause.STRUCTURED_OUTPUT_RETRIES,
+    "error_max_turns": SdkResultCause.TURN_LIMIT,
+    "error_permission": SdkResultCause.PERMISSION,
+}
+_SDK_RESULT_TERMINAL_REASONS = {
+    "api_error": SdkResultCause.API_ERROR,
+    "max_turns": SdkResultCause.TURN_LIMIT,
+    "aborted_streaming": SdkResultCause.INTERRUPTED,
+    "aborted_tools": SdkResultCause.INTERRUPTED,
+}
+# The SDK documents these HTTP statuses as a structured API-error field.  The
+# receipt keeps the category, rather than the numeric status, so it cannot
+# become an incidental network log.
+_SDK_API_ERROR_STATUSES = frozenset(
+    {400, 401, 403, 404, 408, 409, 413, 429, 500, 502, 503, 504, 529}
+)
 
 
 class ExitStage(StrEnum):
@@ -382,6 +423,7 @@ class AgentEvidence:
     first_text_kind: FirstTextKind = FirstTextKind.NONE
     sdk_exception_kind: SdkExceptionKind = SdkExceptionKind.NONE
     sdk_result_kind: SdkResultKind = SdkResultKind.NONE
+    sdk_result_cause: SdkResultCause = SdkResultCause.NONE
     sdk_cleanup_kind: SdkCleanupKind = SdkCleanupKind.NONE
 
     def has_successful(self, kind: ToolKind, *, exactly: int = 1) -> bool:
@@ -554,6 +596,32 @@ def _sdk_result_kind(message: object) -> SdkResultKind:
     return SdkResultKind.OTHER
 
 
+def _sdk_result_cause(message: object) -> SdkResultCause:
+    """Classify an SDK error result without retaining free-form error data.
+
+    ``terminal_reason``, ``subtype`` and the documented API status are
+    protocol fields.  ``errors`` and ``result`` are intentionally absent from
+    this function: they are free-form text and must never enter a receipt.
+    """
+
+    if _sdk_result_kind(message) is not SdkResultKind.ERROR:
+        return SdkResultCause.NONE
+    reason = getattr(message, "terminal_reason", None)
+    if isinstance(reason, str):
+        known_reason = _SDK_RESULT_TERMINAL_REASONS.get(reason)
+        if known_reason is not None:
+            return known_reason
+    subtype = getattr(message, "subtype", None)
+    if isinstance(subtype, str):
+        known_subtype = _SDK_RESULT_SUBTYPES.get(subtype)
+        if known_subtype is not None:
+            return known_subtype
+    status = getattr(message, "api_error_status", None)
+    if isinstance(status, int) and status in _SDK_API_ERROR_STATUSES:
+        return SdkResultCause.API_ERROR
+    return SdkResultCause.OTHER
+
+
 def _pre_marketplace_failure_receipt(
     evidence: AgentEvidence,
 ) -> PreMarketplaceFailureReceipt | None:
@@ -582,6 +650,7 @@ def _pre_marketplace_failure_receipt(
         stage=attempted_stage,
         sdk_exception=evidence.sdk_exception_kind,
         sdk_result=evidence.sdk_result_kind,
+        sdk_result_cause=evidence.sdk_result_cause,
         sdk_cleanup=evidence.sdk_cleanup_kind,
         first_text=evidence.first_text_kind,
         first_tool_intent=evidence.tool_intents[0] if evidence.tool_intents else None,
@@ -1511,6 +1580,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         first_text_kind = FirstTextKind.NONE
         sdk_exception_kind = SdkExceptionKind.NONE
         sdk_result_kind = SdkResultKind.NONE
+        sdk_result_cause = SdkResultCause.NONE
         sdk_cleanup_kind = SdkCleanupKind.NONE
 
         async def force_permission(
@@ -1579,7 +1649,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         try:
             async def receive() -> None:
                 nonlocal first_text_kind, result_seen, session_verified, terminal_error
-                nonlocal sdk_result_kind
+                nonlocal sdk_result_kind, sdk_result_cause
                 await client.connect()
                 await client.query(prompt)
                 async for message in client.receive_response():
@@ -1608,6 +1678,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                         session_verified = message.session_id == str(expected_session)
                         terminal_error = message.is_error
                         sdk_result_kind = _sdk_result_kind(message)
+                        sdk_result_cause = _sdk_result_cause(message)
 
             try:
                 await asyncio.wait_for(receive(), timeout=timeout_seconds)
@@ -1669,6 +1740,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
             first_text_kind=first_text_kind,
             sdk_exception_kind=sdk_exception_kind,
             sdk_result_kind=sdk_result_kind,
+            sdk_result_cause=sdk_result_cause,
             sdk_cleanup_kind=sdk_cleanup_kind,
         )
 
