@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--first-comparison",
         action="store_true",
-        help="Observe the first reply and deny all effects after the public README fetch",
+        help="Observe one tool-free first response after the out-of-band README SHA-256 audit",
     )
     arguments = parser.parse_args(argv)
     try:
@@ -40,12 +40,10 @@ def main(argv: list[str] | None = None) -> int:
             first_comparison=arguments.first_comparison,
         )
         if arguments.first_comparison:
-            comparison = runner.compare_first_response()
-            first_tool = comparison.first_tool_intent or "none"
+            comparison = runner.observe_tool_free_first_response()
             print(
-                "PRODUCTION_E2E_COMPARISON "
-                f"text={comparison.first_text_kind} first_tool={first_tool} "
-                f"denied={','.join(comparison.denied_tool_intents) or 'none'}"
+                "PRODUCTION_E2E_TOOL_FREE_FIRST_RESPONSE "
+                f"text={comparison.first_text_kind}"
             )
             return 0
         report = runner.run()

@@ -40,7 +40,7 @@ def test_public_copy_paste_prompts_and_fixed_e2e_input_remain_exact() -> None:
         "После установки открой новый чат и отправь /sensai:sensai."
     )
     assert f"```text\n{russian_prompt}\n```" in readme
-    assert _SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP] == russian_prompt
+    assert _SCENARIO_PROMPTS[FirstReplyScenario.DIRECT_MARKETPLACE] == russian_prompt
 
 
 def test_sensai_skill_description_covers_a_person_starting_consultation() -> None:

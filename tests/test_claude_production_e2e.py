@@ -298,11 +298,14 @@ def _install_minimal_dialogue_sdk(
     *,
     replies: tuple[str, ...],
     query_error: Exception | None = None,
-) -> None:
+) -> list[dict[str, object]]:
     """Install a fake SDK that exposes only visible assistant text."""
+
+    option_calls: list[dict[str, object]] = []
 
     class FakeOptions:
         def __init__(self, **kwargs: object) -> None:
+            option_calls.append(kwargs)
             self.session_id = cast(str, kwargs["session_id"])
 
     class FakeTextBlock:
@@ -365,6 +368,7 @@ def _install_minimal_dialogue_sdk(
             UserMessage=type("UserMessage", (), {}),
         ),
     )
+    return option_calls
 
 
 def test_installation_route_stops_after_public_plugin_connection_and_new_chat() -> None:
@@ -457,12 +461,10 @@ def test_installation_prompt_is_fixed_test_input_not_a_readme_value() -> None:
     assert driver.calls[1].command[-1] == INSTALLATION_SCENARIO.prompt
 
 
-def test_first_comparison_keeps_only_redacted_first_reply_and_tool_categories() -> None:
+def test_tool_free_first_response_keeps_only_redacted_first_reply() -> None:
     evidence = replace(
         _evidence(),
         first_text_kind=FirstTextKind.TRUST_QUESTION,
-        tool_intents=(ToolKind.PUBLIC_README_FETCH, ToolKind.PUBLIC_METADATA_BASH),
-        denied_tool_intents=(ToolKind.PUBLIC_METADATA_BASH,),
     )
     driver = _Driver(evidence)
     runner = ProductionSensaiE2E(
@@ -474,13 +476,40 @@ def test_first_comparison_keeps_only_redacted_first_reply_and_tool_categories() 
         first_comparison=True,
     )
 
-    report = runner.compare_first_response()
+    report = runner.observe_tool_free_first_response()
 
     assert report.public_readme_sha256 == "b" * 64
     assert report.first_text_kind is FirstTextKind.TRUST_QUESTION
-    assert report.first_tool_intent is ToolKind.PUBLIC_README_FETCH
-    assert report.denied_tool_intents == (ToolKind.PUBLIC_METADATA_BASH,)
     assert driver.calls[1].command[-1] == PUBLIC_INSTALL_PROMPT
+
+
+def test_sdk_tool_free_first_response_has_no_tools_hooks_or_permission_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    option_calls = _install_minimal_dialogue_sdk(monkeypatch, replies=("Первый ответ",))
+    work = tmp_path / "run" / "work"
+    work.mkdir(parents=True)
+
+    evidence = asyncio.run(
+        SdkClaudeDriver(first_comparison=True)._run_agent_async(
+            executable="claude",
+            prompt=PUBLIC_INSTALL_PROMPT,
+            cwd=work,
+            environment={},
+            timeout_seconds=1,
+            expected_visible_messages=(),
+            expected_session=uuid.uuid4(),
+            expected_new_chat_uri=None,
+        )
+    )
+
+    assert evidence.first_text_kind is FirstTextKind.OTHER
+    assert len(option_calls) == 1
+    options = option_calls[0]
+    assert options["tools"] == []
+    assert options["allowed_tools"] == []
+    assert "can_use_tool" not in options
+    assert "hooks" not in options
 
 
 @pytest.mark.parametrize(
@@ -1006,7 +1035,7 @@ def test_dialogue_write_failure_still_cleans_the_disposable_run(
     )
 
     with pytest.raises(ProductionE2EError, match="last_claude_dialogue_not_saved"):
-        runner.compare_first_response()
+        runner.observe_tool_free_first_response()
 
     assert list((profile / "runs").iterdir()) == []
 
@@ -1389,47 +1418,6 @@ def test_safe_metadata_inventory_rejects_duplicates_and_non_inert_shape(command:
 
     assert decision.decision is PermissionDecision.DENY
     assert decision.intent is not ToolKind.PUBLIC_METADATA_INVENTORY_BASH
-
-
-def test_first_comparison_allows_only_the_public_readme_fetch() -> None:
-    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
-    policy = InstallationPermissionPolicy(
-        new_chat_uri=actions[-1][1],
-        claude_linux_actions=actions,
-        first_comparison=True,
-    )
-    metadata = (
-        "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/"
-        ".claude-plugin/marketplace.json"
-    )
-
-    assert (
-        policy.decide("WebFetch", {"url": PUBLIC_README_URL}).decision is PermissionDecision.ALLOW
-    )
-    metadata_fetch = policy.decide("WebFetch", {"url": metadata})
-    assert metadata_fetch.decision is PermissionDecision.DENY
-    assert metadata_fetch.intent is ToolKind.PUBLIC_METADATA_FETCH
-    metadata_bash = policy.decide("Bash", {"command": f"curl -fsSL {metadata}"})
-    assert metadata_bash.decision is PermissionDecision.DENY
-    assert metadata_bash.intent is ToolKind.PUBLIC_METADATA_BASH
-    other = policy.decide("Bash", {"command": "id"})
-    assert other.decision is PermissionDecision.DENY
-    assert other.intent is ToolKind.OTHER
-
-
-def test_first_comparison_denies_safe_metadata_inventory() -> None:
-    actions = tuple(argv for _, argv in CLAUDE_LINUX_ACTIONS)
-    policy = InstallationPermissionPolicy(
-        new_chat_uri=actions[-1][1],
-        claude_linux_actions=actions,
-        first_comparison=True,
-    )
-    command = _metadata_inventory_command()
-
-    decision = policy.decide("Bash", {"command": command})
-
-    assert decision.decision is PermissionDecision.DENY
-    assert decision.intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH
 
 
 def test_oauth_entry_url_allows_only_sensai_or_google_without_credentials() -> None:

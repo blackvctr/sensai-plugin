@@ -46,7 +46,7 @@ _CODE_BLOCK = re.compile(r"```")
 class FirstReplyScenario(StrEnum):
     """The public first-contact case under acceptance."""
 
-    URL_BOOTSTRAP = "url_bootstrap"
+    DIRECT_MARKETPLACE = "direct_marketplace"
 
 
 # This is the Russian public copy-paste installation request from README.
@@ -57,7 +57,7 @@ _CANONICAL_RUSSIAN_INSTALL_PROMPT = (
 )
 
 _SCENARIO_PROMPTS: dict[FirstReplyScenario, str] = {
-    FirstReplyScenario.URL_BOOTSTRAP: _CANONICAL_RUSSIAN_INSTALL_PROMPT,
+    FirstReplyScenario.DIRECT_MARKETPLACE: _CANONICAL_RUSSIAN_INSTALL_PROMPT,
 }
 
 ResultCategory = Literal[

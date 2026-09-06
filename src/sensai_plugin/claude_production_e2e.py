@@ -447,13 +447,15 @@ class ProductionE2EReport:
 
 
 @dataclass(frozen=True, slots=True)
-class FirstComparisonReport:
-    """Redacted evidence from the first safely stopped public README run."""
+class ToolFreeFirstResponseReport:
+    """Redacted evidence from one tool-free first response.
+
+    The README digest is checked out of band before Claude starts. Claude does
+    not receive the README URL or a synthetic permission denial in this mode.
+    """
 
     public_readme_sha256: str
     first_text_kind: FirstTextKind
-    first_tool_intent: ToolKind | None
-    denied_tool_intents: tuple[ToolKind, ...]
 
 
 class ClaudeDriver(Protocol):
@@ -904,9 +906,7 @@ class InstallationPermissionPolicy:
         *,
         new_chat_uri: str,
         claude_linux_actions: tuple[tuple[str, ...], ...],
-        first_comparison: bool = False,
     ) -> None:
-        self._first_comparison = first_comparison
         self._new_chat_uri = new_chat_uri
         self._metadata_inventory_seen = False
         self._install_action_seen = False
@@ -958,19 +958,14 @@ class InstallationPermissionPolicy:
         if intent is ToolKind.PUBLIC_README_FETCH:
             return InstallationPermission(PermissionDecision.ALLOW, intent)
         if intent is ToolKind.PUBLIC_METADATA_FETCH:
-            return InstallationPermission(
-                PermissionDecision.DENY if self._first_comparison else PermissionDecision.ALLOW,
-                intent,
-            )
+            return InstallationPermission(PermissionDecision.ALLOW, intent)
         if not isinstance(tool_input, dict) or tool_name != "Bash":
             return InstallationPermission(PermissionDecision.DENY, intent)
         command = tool_input.get("command")
         if intent is ToolKind.PUBLIC_METADATA_BASH:
-            if self._first_comparison:
-                return InstallationPermission(PermissionDecision.DENY, intent)
             return InstallationPermission(PermissionDecision.ALLOW, intent)
         if intent is ToolKind.PUBLIC_METADATA_INVENTORY_BASH:
-            if self._first_comparison or self._metadata_inventory_seen or self._install_action_seen:
+            if self._metadata_inventory_seen or self._install_action_seen:
                 return InstallationPermission(PermissionDecision.DENY, intent)
             self._metadata_inventory_seen = True
             return InstallationPermission(PermissionDecision.ALLOW, intent)
@@ -987,8 +982,6 @@ class InstallationPermissionPolicy:
                 return InstallationPermission(PermissionDecision.DENY, intent)
             if wrapper != self._login_wrapper:
                 return InstallationPermission(PermissionDecision.DENY, intent)
-        if self._first_comparison:
-            return InstallationPermission(PermissionDecision.DENY, intent)
         if kind in {
             ToolKind.MARKETPLACE_ADD,
             ToolKind.PLUGIN_INSTALL,
@@ -1551,8 +1544,11 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         expected_session: uuid.UUID,
         expected_new_chat_uri: str | None,
     ) -> AgentEvidence:
-        _assert_normal_browser_path(command)
-        if expected_new_chat_uri is None or not command or command[-1] == "":
+        if not self._first_comparison:
+            _assert_normal_browser_path(command)
+        if not command or command[-1] == "":
+            raise ProductionE2EError("sdk_installation_arguments_invalid")
+        if not self._first_comparison and expected_new_chat_uri is None:
             raise ProductionE2EError("sdk_installation_arguments_invalid")
         try:
             return asyncio.run(
@@ -1582,7 +1578,7 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         timeout_seconds: int,
         expected_visible_messages: Sequence[str],
         expected_session: uuid.UUID,
-        expected_new_chat_uri: str,
+        expected_new_chat_uri: str | None,
     ) -> AgentEvidence:
         # The caller's scenario is an acceptance boundary.  It is deliberately
         # not copied into Claude's prompt or compared as generated prose.
@@ -1604,11 +1600,14 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
         except ImportError as error:
             raise ProductionE2EError("claude_agent_sdk_unavailable") from error
 
-        policy = InstallationPermissionPolicy(
-            new_chat_uri=expected_new_chat_uri,
-            claude_linux_actions=INSTALLATION_SCENARIO.claude_linux_actions,
-            first_comparison=self._first_comparison,
-        )
+        policy = None
+        if not self._first_comparison:
+            if expected_new_chat_uri is None:
+                raise ProductionE2EError("sdk_installation_arguments_invalid")
+            policy = InstallationPermissionPolicy(
+                new_chat_uri=expected_new_chat_uri,
+                claude_linux_actions=INSTALLATION_SCENARIO.claude_linux_actions,
+            )
         handoff = (
             None
             if self._first_comparison
@@ -1652,6 +1651,8 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                 return PermissionResultDeny(
                     message="Installation permission gate was not observed."
                 )
+            if policy is None:
+                raise AssertionError("tool-free first response has no permission callback")
             decision = policy.decide(tool_name, tool_input)
             intents.append(decision.intent)
             if decision.decision is PermissionDecision.DENY:
@@ -1684,25 +1685,29 @@ class SdkClaudeDriver(SubprocessClaudeDriver):
                 outstanding[tool_use_id] = decision.action
             return PermissionResultAllow()
 
-        options = ClaudeAgentOptions(
+        option_kwargs: dict[str, Any] = dict(
             cli_path=executable,
             cwd=cwd,
             env=driver_environment,
             model=CLAUDE_SONNET_5_MODEL,
-            tools=["WebFetch", "Bash"],
+            tools=[] if self._first_comparison else ["WebFetch", "Bash"],
             allowed_tools=[],
             permission_mode="default",
-            can_use_tool=decide,
             strict_mcp_config=True,
             mcp_servers={},
             setting_sources=[],
             skills=[],
             plugins=[],
-            hooks={"PreToolUse": [HookMatcher(matcher="Bash|WebFetch", hooks=[force_permission])]},
             session_id=str(expected_session),
             max_turns=16,
             stderr=lambda _line: None,
         )
+        if not self._first_comparison:
+            option_kwargs["can_use_tool"] = decide
+            option_kwargs["hooks"] = {
+                "PreToolUse": [HookMatcher(matcher="Bash|WebFetch", hooks=[force_permission])]
+            }
+        options = ClaudeAgentOptions(**option_kwargs)
         client = ClaudeSDKClient(options=options)
         disconnected = False
         child_absent = False
@@ -1937,16 +1942,16 @@ class ProductionSensaiE2E:
         with create_fresh_run(self._profile) as run:
             return self._run_inside_fresh_profile(run, executable, uuid.uuid4())
 
-    def compare_first_response(self) -> FirstComparisonReport:
-        """Observe the first public-README reaction before effects are allowed.
+    def observe_tool_free_first_response(self) -> ToolFreeFirstResponseReport:
+        """Observe a first response without tools, hooks, or callbacks.
 
-        Only an exact WebFetch of the README is permitted.  Metadata Bash and
-        every other proposed action are denied in the SDK callback and retained
-        only as closed categories in the returned receipt.
+        The public README SHA-256 audit is completed independently before this
+        call. Claude receives only the fixed public human request, so this
+        report never treats a denied tool call as Claude's own reaction.
         """
 
         if not self._first_comparison:
-            raise ProductionE2EError("first_comparison_mode_required")
+            raise ProductionE2EError("tool_free_first_response_mode_required")
         digest = self._public_readme_validator(self._expected_public_readme_sha256)
         executable = self._executable_resolver()
         with create_fresh_run(self._profile) as run:
@@ -1970,17 +1975,15 @@ class ProductionSensaiE2E:
                 timeout_seconds=INSTALL_TIMEOUT_SECONDS,
                 expected_visible_messages=(),
                 expected_session=session,
-                expected_new_chat_uri=INSTALLATION_SCENARIO.new_chat_uri,
+                expected_new_chat_uri=None,
             )
         if evidence.timed_out:
-            raise ProductionE2EError("first_comparison_timed_out")
+            raise ProductionE2EError("tool_free_first_response_timed_out")
         if evidence.stream_limit_exceeded or evidence.malformed or evidence.unclosed_block:
-            raise ProductionE2EError("first_comparison_stream_invalid")
-        return FirstComparisonReport(
+            raise ProductionE2EError("tool_free_first_response_stream_invalid")
+        return ToolFreeFirstResponseReport(
             public_readme_sha256=digest,
             first_text_kind=evidence.first_text_kind,
-            first_tool_intent=evidence.tool_intents[0] if evidence.tool_intents else None,
-            denied_tool_intents=evidence.denied_tool_intents,
         )
 
     def _run_inside_fresh_profile(

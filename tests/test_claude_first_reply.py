@@ -125,7 +125,7 @@ if __MODE__ not in {
         .replace("__EXPECTED_MODEL__", repr(CLAUDE_SONNET_5_MODEL))
         .replace(
             "__EXPECTED_PROMPT__",
-            repr(_SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP]),
+            repr(_SCENARIO_PROMPTS[FirstReplyScenario.DIRECT_MARKETPLACE]),
         ),
         encoding="utf-8",
     )
@@ -139,7 +139,7 @@ def _run(
     mode: str = "complete-first-block",
     first_reply: str = "Я установлю Sensai самостоятельно.",
     second_reply: str = "",
-    scenario: FirstReplyScenario = FirstReplyScenario.URL_BOOTSTRAP,
+    scenario: FirstReplyScenario = FirstReplyScenario.DIRECT_MARKETPLACE,
     timeout_seconds: float = 1,
 ) -> ClaudeFirstReplyAcceptance:
     executable = tmp_path / "claude"
@@ -420,7 +420,7 @@ def test_timeout_is_safe_and_cleans_temporary_hooks(
 
 def test_all_hard_coded_scenarios_remain_the_exact_public_install_request() -> None:
     assert _SCENARIO_PROMPTS == {
-        FirstReplyScenario.URL_BOOTSTRAP: (
+        FirstReplyScenario.DIRECT_MARKETPLACE: (
             "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
             "После установки открой новый чат и отправь /sensai:sensai."
         )
@@ -432,11 +432,11 @@ def test_stale_two_line_scenario_input_fails_before_claude_runs(
 ) -> None:
     monkeypatch.setitem(
         _SCENARIO_PROMPTS,
-        FirstReplyScenario.URL_BOOTSTRAP,
+        FirstReplyScenario.DIRECT_MARKETPLACE,
         "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
         "После установки открой новый чат и отправь /sensai:sensai.\n"
         "Перед любым действием сначала коротко ответь по-русски, что установкой займёшься ты.",
     )
 
     with pytest.raises(ClaudeFirstReplyError, match="canonical README prompt"):
-        run_real_claude_first_reply(scenario=FirstReplyScenario.URL_BOOTSTRAP)
+        run_real_claude_first_reply(scenario=FirstReplyScenario.DIRECT_MARKETPLACE)
