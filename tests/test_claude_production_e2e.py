@@ -1048,7 +1048,7 @@ def test_full_run_does_not_attach_early_receipt_after_marketplace() -> None:
 def test_agent_command_exposes_tools_without_a_brittle_shell_allowlist() -> None:
     command = _agent_command(
         "claude",
-        prompt="Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md",
+        prompt=PUBLIC_INSTALL_PROMPT,
         session=uuid.uuid4(),
     )
 

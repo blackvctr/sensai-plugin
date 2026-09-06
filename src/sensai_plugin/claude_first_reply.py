@@ -44,7 +44,7 @@ _CODE_BLOCK = re.compile(r"```")
 
 
 class FirstReplyScenario(StrEnum):
-    """The historical link-based first-contact case under acceptance."""
+    """The public first-contact case under acceptance."""
 
     URL_BOOTSTRAP = "url_bootstrap"
 
@@ -52,8 +52,8 @@ class FirstReplyScenario(StrEnum):
 # This is the Russian public copy-paste installation request from README.
 # Keeping it literal makes the real first-reply check cover that exact path.
 _CANONICAL_RUSSIAN_INSTALL_PROMPT = (
-    "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
-    "sensai-plugin/main/README.md"
+    "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
+    "После установки открой новый чат и отправь /sensai:sensai."
 )
 
 _SCENARIO_PROMPTS: dict[FirstReplyScenario, str] = {

@@ -421,8 +421,8 @@ def test_timeout_is_safe_and_cleans_temporary_hooks(
 def test_all_hard_coded_scenarios_remain_the_exact_public_install_request() -> None:
     assert _SCENARIO_PROMPTS == {
         FirstReplyScenario.URL_BOOTSTRAP: (
-            "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
-            "sensai-plugin/main/README.md"
+            "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
+            "После установки открой новый чат и отправь /sensai:sensai."
         )
     }
 
@@ -433,8 +433,8 @@ def test_stale_two_line_scenario_input_fails_before_claude_runs(
     monkeypatch.setitem(
         _SCENARIO_PROMPTS,
         FirstReplyScenario.URL_BOOTSTRAP,
-        "Установи Sensai https://raw.githubusercontent.com/blackvctr/"
-        "sensai-plugin/main/README.md\n"
+        "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
+        "После установки открой новый чат и отправь /sensai:sensai.\n"
         "Перед любым действием сначала коротко ответь по-русски, что установкой займёшься ты.",
     )
 

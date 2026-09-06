@@ -36,7 +36,8 @@ def test_public_readme_is_human_installation_guidance_not_a_test_manifest() -> N
 def test_public_copy_paste_prompts_and_fixed_e2e_input_remain_exact() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
     russian_prompt = (
-        "Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
+        "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
+        "После установки открой новый чат и отправь /sensai:sensai."
     )
     assert f"```text\n{russian_prompt}\n```" in readme
     assert _SCENARIO_PROMPTS[FirstReplyScenario.URL_BOOTSTRAP] == russian_prompt

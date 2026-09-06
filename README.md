@@ -12,7 +12,7 @@ Sensai may return advice, architecture, detailed implementation instructions, an
 4. Start a new chat with this instruction:
 
 ```text
-Установи Sensai https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md
+Установи плагин Sensai из marketplace blackvctr/sensai-plugin. После установки открой новый чат и отправь /sensai:sensai.
 ```
 
 ## Installation after explicit request (AI agent part)

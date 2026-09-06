@@ -49,7 +49,10 @@ MAX_STREAM_BYTES = 2 * 1024 * 1024
 MAX_TOOL_INPUT_BYTES = 32 * 1024
 MAX_PUBLIC_README_BYTES = 2 * 1024 * 1024
 PUBLIC_README_URL = "https://raw.githubusercontent.com/blackvctr/sensai-plugin/main/README.md"
-PUBLIC_INSTALL_PROMPT = f"Установи Sensai {PUBLIC_README_URL}"
+PUBLIC_INSTALL_PROMPT = (
+    "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
+    "После установки открой новый чат и отправь /sensai:sensai."
+)
 _E2E_WEBFETCH_PERMISSION = "WebFetch(domain:raw.githubusercontent.com)"
 _PUBLIC_RAW_HOST = "raw.githubusercontent.com"
 _PUBLIC_RAW_PREFIX = "/blackvctr/sensai-plugin/main/"
