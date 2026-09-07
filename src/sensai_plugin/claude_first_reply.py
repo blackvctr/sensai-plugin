@@ -51,7 +51,10 @@ class FirstReplyScenario(StrEnum):
 
 # This is the Russian public copy-paste installation request from README.
 # Keeping it literal makes the real first-reply check cover that exact path.
-_CANONICAL_RUSSIAN_INSTALL_PROMPT = "Установи blackvctr/sensai-plugin"
+_CANONICAL_RUSSIAN_INSTALL_PROMPT = (
+    "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
+    "После установки открой новый чат и отправь /sensai:sensai."
+)
 
 _SCENARIO_PROMPTS: dict[FirstReplyScenario, str] = {
     FirstReplyScenario.DIRECT_MARKETPLACE: _CANONICAL_RUSSIAN_INSTALL_PROMPT,
