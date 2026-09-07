@@ -35,7 +35,7 @@ def test_public_readme_is_human_installation_guidance_not_a_test_manifest() -> N
 
 def test_public_readme_names_the_marketplace_without_an_agent_copy_paste_prompt() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "Install Sensai from the `blackvctr/sensai-plugin` marketplace." in readme
+    assert "Use your AI client's standard plugin-installation controls" in readme
     assert "After installation open a new chat" not in readme
     assert "```text\n" not in readme
 
