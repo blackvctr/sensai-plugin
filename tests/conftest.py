@@ -10,6 +10,6 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def source_copy(tmp_path: Path) -> Path:
-    destination = tmp_path / "payload-src"
-    shutil.copytree(REPOSITORY_ROOT / "payload-src", destination)
+    destination = tmp_path / "plugin-src"
+    shutil.copytree(REPOSITORY_ROOT / "plugin-src", destination)
     return destination

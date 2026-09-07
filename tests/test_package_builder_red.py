@@ -515,4 +515,4 @@ def test_plugin_package_001_review_restores_previous_output_when_cleanup_fails(
 
     assert cleanup_failures == 1
     assert _regular_files(output_root) == previous_files
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["output", "payload-src"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["output", "plugin-src"]

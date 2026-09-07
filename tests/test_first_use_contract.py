@@ -7,7 +7,7 @@ from sensai_plugin.package_builder import BuiltPackages, plugin_version
 from sensai_plugin.package_builder import build_packages as _build_packages
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_SKILL = REPOSITORY_ROOT / "payload-src/shared/skills/sensai/SKILL.md"
+SOURCE_SKILL = REPOSITORY_ROOT / "plugin-src/shared/skills/sensai/SKILL.md"
 PACKAGED_SKILL = REPOSITORY_ROOT / "plugins/sensai/skills/sensai/SKILL.md"
 
 
@@ -54,7 +54,7 @@ def test_sensai_skill_description_covers_a_person_starting_consultation() -> Non
 
 def test_built_payloads_keep_the_concise_post_install_consultation_contract(tmp_path: Path) -> None:
     built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
+        source_root=REPOSITORY_ROOT / "plugin-src",
         output_root=tmp_path / "packages",
     )
 

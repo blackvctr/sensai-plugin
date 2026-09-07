@@ -33,7 +33,7 @@ def test_remote_mcp_uses_native_oauth_discovery_without_static_credentials() -> 
             }
         }
     }
-    source = json.loads((ROOT / "payload-src/shared/.mcp.json").read_text(encoding="utf-8"))
+    source = json.loads((ROOT / "plugin-src/shared/.mcp.json").read_text(encoding="utf-8"))
     public = json.loads((ROOT / "plugins/sensai/.mcp.json").read_text(encoding="utf-8"))
 
     assert source == expected

@@ -90,7 +90,7 @@ def _validate_mcp_url(mcp_url: str) -> None:
 
 
 def _prepare_source(source_root: Path, destination: Path, mcp_url: str) -> Path:
-    copied = destination / "payload-src"
+    copied = destination / "plugin-src"
     shutil.copytree(source_root, copied, symlinks=True)
     mcp_path = copied / "shared" / ".mcp.json"
     mcp = _load_object(mcp_path)
@@ -191,7 +191,7 @@ def build_release(
 ) -> Path:
     """Build and atomically publish one deterministic local release bundle."""
     _validate_mcp_url(mcp_url)
-    source_root = repository_root / "payload-src"
+    source_root = repository_root / "plugin-src"
     if source_root.is_symlink() or not source_root.is_dir():
         raise UnsafeSourceError("Payload source root must be a regular directory")
     resolved_source = source_root.resolve(strict=True)

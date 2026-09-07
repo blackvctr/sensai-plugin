@@ -113,7 +113,7 @@ def _plugin_manifest(files: dict[str, bytes], platform: str) -> bytes:
 
 def _copy_build_repository(destination: Path) -> Path:
     destination.mkdir()
-    for directory in ("contracts", "payload-src", "src"):
+    for directory in ("contracts", "plugin-src", "src"):
         shutil.copytree(REPOSITORY_ROOT / directory, destination / directory, symlinks=True)
     scripts = destination / "scripts"
     scripts.mkdir()
@@ -340,7 +340,7 @@ def test_pre2e_r01_build_preserves_and_rejects_outside_source_symlink(
     repository = _copy_build_repository(tmp_path / "repository")
     outside = tmp_path / "outside-skill.md"
     outside.write_text("outside reviewed source\n", encoding="utf-8")
-    skill = repository / "payload-src" / "shared" / "skills" / "sensai" / "SKILL.md"
+    skill = repository / "plugin-src" / "shared" / "skills" / "sensai" / "SKILL.md"
     skill.unlink()
     skill.symlink_to(outside)
     output = tmp_path / "bundle"
@@ -367,13 +367,13 @@ def test_pre2e_r01_build_preserves_and_rejects_outside_source_symlink(
 
 def test_pre2e_r01_build_rejects_symlinked_payload_source_root(tmp_path: Path) -> None:
     repository = _copy_build_repository(tmp_path / "repository")
-    outside_source = tmp_path / "outside-payload-src"
-    shutil.copytree(repository / "payload-src", outside_source)
+    outside_source = tmp_path / "outside-plugin-src"
+    shutil.copytree(repository / "plugin-src", outside_source)
     marker = b"OUTSIDE-PAYLOAD-ROOT-MARKER-4f08c9\n"
     skill = outside_source / "shared" / "skills" / "sensai" / "SKILL.md"
     skill.write_bytes(skill.read_bytes() + marker)
-    shutil.rmtree(repository / "payload-src")
-    (repository / "payload-src").symlink_to(outside_source, target_is_directory=True)
+    shutil.rmtree(repository / "plugin-src")
+    (repository / "plugin-src").symlink_to(outside_source, target_is_directory=True)
     output = tmp_path / "bundle"
 
     completed = subprocess.run(

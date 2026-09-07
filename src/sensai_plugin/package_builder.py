@@ -187,7 +187,7 @@ def _validate_public_content(relative: str, content: bytes) -> None:
         raise UnsafeSourceError(f"Secret-like value in payload source: {relative}")
     if _PRIVATE_SERVER_REFERENCE.search(text):
         raise UnsafeSourceError(f"Private server reference in payload source: {relative}")
-    if "payload-src" in text:
+    if "plugin-src" in text:
         raise UnsafeSourceError(f"Build-tree reference in payload source: {relative}")
 
 

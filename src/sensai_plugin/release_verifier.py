@@ -369,7 +369,7 @@ def _document_json(value: Any) -> bytes:
 
 
 def _trusted_source_bytes(repository_root: Path) -> dict[str, bytes]:
-    source_root = repository_root / "payload-src"
+    source_root = repository_root / "plugin-src"
     if source_root.is_symlink() or not source_root.is_dir():
         raise ReleaseVerificationError("Trusted plugin source root is unsafe")
     files: set[str] = set()

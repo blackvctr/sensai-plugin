@@ -113,7 +113,7 @@ def synchronize(*, check: bool) -> bool:
     with tempfile.TemporaryDirectory(prefix="sensai-public-marketplace-") as temporary:
         version = plugin_version(REPOSITORY_ROOT)
         built = build_packages(
-            source_root=REPOSITORY_ROOT / "payload-src",
+            source_root=REPOSITORY_ROOT / "plugin-src",
             output_root=Path(temporary) / "packages",
             version=version,
         )

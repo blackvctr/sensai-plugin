@@ -10,7 +10,7 @@ The person gives Codex or Claude Code one natural request containing only the pu
 - `.claude-plugin/marketplace.json` is the Claude Code marketplace root.
 - Both catalogs point only to `./plugins/sensai`.
 - `plugins/sensai` combines the two platform manifests with one byte-identical shared MCP
-  configuration and Sensai skill generated from the reviewed `payload-src` allowlist.
+  configuration and Sensai skill generated from the reviewed `plugin-src` allowlist.
 - The public MCP configuration contains only its HTTPS URL and transport type. Authentication is
   native MCP OAuth; no static authorization header or environment-token fallback is packaged.
 - `scripts/sync_public_marketplace.py` regenerates all three public paths, and `--check` fails when

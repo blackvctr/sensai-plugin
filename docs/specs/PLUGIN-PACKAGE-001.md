@@ -13,7 +13,7 @@ This specification covers source layout, generated file layout, deterministic ha
 Only these source files are eligible for payload generation:
 
 ```text
-payload-src/
+plugin-src/
   shared/
     .mcp.json
     skills/sensai/SKILL.md
@@ -21,7 +21,7 @@ payload-src/
   claude/.claude-plugin/plugin.json
 ```
 
-The builder code lives under `src/sensai_plugin/`; tests and documentation remain repository-only. The four paths above form an exact allowlist, not a glob. Every path must be a regular file reached through regular directories. A missing file, extra file or directory content, symlink, or path that resolves outside `payload-src/` is an error until the allowlist and this specification are deliberately changed.
+The builder code lives under `src/sensai_plugin/`; tests and documentation remain repository-only. The four paths above form an exact allowlist, not a glob. Every path must be a regular file reached through regular directories. A missing file, extra file or directory content, symlink, or path that resolves outside `plugin-src/` is an error until the allowlist and this specification are deliberately changed.
 
 ## Generated Contract
 
@@ -41,7 +41,7 @@ packages/
     MANIFEST.sha256
 ```
 
-The platform manifest is copied only to its platform payload. The shared MCP configuration and human instructions are byte-identical in both payloads and originate only from `payload-src/shared`. `MANIFEST.sha256` contains every other regular payload file, sorted by POSIX relative path, as `<lowercase sha256><two spaces><relative path>\n`. It does not list itself. No generated content contains timestamps, source paths, random values, host-specific values, or machine-dependent line endings.
+The platform manifest is copied only to its platform payload. The shared MCP configuration and human instructions are byte-identical in both payloads and originate only from `plugin-src/shared`. `MANIFEST.sha256` contains every other regular payload file, sorted by POSIX relative path, as `<lowercase sha256><two spaces><relative path>\n`. It does not list itself. No generated content contains timestamps, source paths, random values, host-specific values, or machine-dependent line endings.
 
 ## Requirements
 
@@ -55,7 +55,7 @@ The platform manifest is copied only to its platform payload. The shared MCP con
 - **PLUGIN-PACKAGE-001-R03 Platform contracts:** The Codex payload contains
   `.codex-plugin/plugin.json`; the Claude payload contains `.claude-plugin/plugin.json`; each
   contains the same single Sensai `SKILL.md` and `.mcp.json` bytes. Those bytes exactly equal their
-  respective files under `payload-src/shared`; platform manifests likewise derive byte-for-byte
+  respective files under `plugin-src/shared`; platform manifests likewise derive byte-for-byte
   from their platform source.
 - **PLUGIN-PACKAGE-001-R04 Public-safe payloads:** Payloads contain only regular files rooted below
   their own package directory. They contain no symlink, path escape, local absolute path, secret-like
@@ -63,7 +63,7 @@ The platform manifest is copied only to its platform payload. The shared MCP con
   metadata, or unresolved `../` reference. Each unsafe source category is rejected independently.
 - **PLUGIN-PACKAGE-001-R05 Independent roots:** Either platform directory can be relocated and
   validated from its own root. Every path referenced by its plugin manifest resolves inside that
-  root and no installed file refers back to `payload-src`, repository build code, or the other
+  root and no installed file refers back to `plugin-src`, repository build code, or the other
   platform payload.
 
 ## Failure Rules

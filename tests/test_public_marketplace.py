@@ -73,7 +73,7 @@ def test_public_repository_is_a_ready_codex_marketplace(tmp_path: Path) -> None:
     }
 
     built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
+        source_root=REPOSITORY_ROOT / "plugin-src",
         output_root=tmp_path / "packages",
     )
     committed = REPOSITORY_ROOT / "plugins" / "sensai"
@@ -116,7 +116,7 @@ def test_plugin_version_is_consistent_across_build_and_public_marketplaces(tmp_p
     assert plugin_version(REPOSITORY_ROOT) == build_version
     for platform in ("codex", "claude"):
         source_manifest = json.loads(
-            (REPOSITORY_ROOT / f"payload-src/{platform}/.{platform}-plugin/plugin.json").read_text(
+            (REPOSITORY_ROOT / f"plugin-src/{platform}/.{platform}-plugin/plugin.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -128,7 +128,7 @@ def test_plugin_version_is_consistent_across_build_and_public_marketplaces(tmp_p
     assert marketplace["plugins"][0]["version"] == build_version
 
     built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
+        source_root=REPOSITORY_ROOT / "plugin-src",
         output_root=tmp_path / "packages",
     )
     for platform in ("codex", "claude"):
@@ -142,7 +142,7 @@ def test_plugin_version_is_consistent_across_build_and_public_marketplaces(tmp_p
 
 def test_both_platform_manifests_expose_the_public_source_repository(tmp_path: Path) -> None:
     built = build_packages(
-        source_root=REPOSITORY_ROOT / "payload-src",
+        source_root=REPOSITORY_ROOT / "plugin-src",
         output_root=tmp_path / "packages",
     )
 
