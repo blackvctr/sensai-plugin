@@ -4,6 +4,10 @@ Sensai helps people choose useful connectors and built-in tools for their curren
 
 Publisher: [Black Vector](https://black-vector.com/)
 
+## Plugin surface
+
+The installed plugin contains no local hooks or executables. It configures one remote MCP server at `https://black-vector.com/sensai/mcp`.
+
 ## Installation (if you are human)
 
 1. You need [ChatGPT Desktop](https://chatgpt.com/download/) with an OpenAI subscription, or [Claude Desktop](https://claude.ai/download) with an Anthropic subscription.
