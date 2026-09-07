@@ -4,6 +4,8 @@ Sensai helps people choose useful connectors and built-in tools for their curren
 
 Publisher: [Black Vector](https://black-vector.com/)
 
+Privacy: [PRIVACY.md](PRIVACY.md)
+
 ## Plugin surface
 
 The installed plugin contains no local hooks or executables. It configures one remote MCP server at `https://black-vector.com/sensai/mcp`.
