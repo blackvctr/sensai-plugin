@@ -26,8 +26,8 @@ def test_public_payload_is_built_from_the_single_skill_source() -> None:
 def test_public_readme_is_human_installation_guidance_not_a_test_manifest() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "## Installation after explicit request (AI agent part)" in readme
-    assert "#### Known problems" in readme
+    assert "## Installation after explicit request" not in readme
+    assert "#### Known problems" not in readme
     assert "## Installation manifest" not in readme
     assert '"schema": "sensai-install-v2"' not in readme
     assert "```json" not in readme
