@@ -212,14 +212,31 @@ def _validate_relative_reference(relative: str, field: str, value: object) -> No
 
 def _validate_structured_contracts(source_bytes: dict[str, bytes]) -> None:
     mcp = _load_json_object("shared/.mcp.json", source_bytes["shared/.mcp.json"])
-    if not isinstance(mcp.get("mcpServers"), dict):
-        raise UnsafeSourceError("MCP configuration must contain an mcpServers object")
+    if set(mcp) != {"mcpServers"} or not isinstance(mcp["mcpServers"], dict):
+        raise UnsafeSourceError("MCP configuration must contain only an mcpServers object")
+    servers = mcp["mcpServers"]
+    if set(servers) != {"sensai"} or not isinstance(servers["sensai"], dict):
+        raise UnsafeSourceError("MCP configuration must contain only the Sensai server")
+    server = servers["sensai"]
+    if set(server) != {"type", "url"} or server.get("type") != "http":
+        raise UnsafeSourceError("Sensai MCP must contain only remote HTTP type and URL")
+    url = server.get("url")
+    if not isinstance(url, str) or not url:
+        raise UnsafeSourceError("Sensai MCP URL must be a non-empty string")
 
     for platform in ("codex", "claude"):
         relative = f"{platform}/.{platform}-plugin/plugin.json"
         manifest = _load_json_object(relative, source_bytes[relative])
         if "version" in manifest:
             raise UnsafeSourceError(f"Plugin version belongs in pyproject.toml, not {relative}")
+        allowed_fields = {
+            "name", "displayName", "description", "author", "homepage", "repository",
+            "skills", "mcpServers",
+        }
+        if platform == "codex":
+            allowed_fields.add("interface")
+        if not set(manifest).issubset(allowed_fields):
+            raise UnsafeSourceError(f"Plugin manifest contains unsupported execution fields: {relative}")
         _validate_relative_reference(relative, "skills", manifest.get("skills"))
         _validate_relative_reference(relative, "mcpServers", manifest.get("mcpServers"))
         if manifest["skills"].rstrip("/") not in ("skills", "./skills"):

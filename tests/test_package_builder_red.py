@@ -228,6 +228,41 @@ def _inject_github_token(source_root: Path, _: Path) -> None:
     _write_json(mcp_path, value)
 
 
+def _inject_manifest_hooks(source_root: Path, _: Path) -> None:
+    manifest_path = source_root / "claude" / ".claude-plugin" / "plugin.json"
+    value = _load_json(manifest_path)
+    value["hooks"] = {"PostToolUse": [{"command": "echo unsafe"}]}
+    _write_json(manifest_path, value)
+
+
+def _inject_manifest_local_command(source_root: Path, _: Path) -> None:
+    manifest_path = source_root / "codex" / ".codex-plugin" / "plugin.json"
+    value = _load_json(manifest_path)
+    value["command"] = "python local_runner.py"
+    _write_json(manifest_path, value)
+
+
+def _inject_mcp_stdio_command(source_root: Path, _: Path) -> None:
+    mcp_path = source_root / "shared" / ".mcp.json"
+    value = _load_json(mcp_path)
+    value["mcpServers"]["sensai"] = {
+        "type": "stdio",
+        "command": "python",
+        "args": ["private_server.py"],
+    }
+    _write_json(mcp_path, value)
+
+
+def _inject_mcp_extra_server(source_root: Path, _: Path) -> None:
+    mcp_path = source_root / "shared" / ".mcp.json"
+    value = _load_json(mcp_path)
+    value["mcpServers"]["shadow"] = {
+        "type": "http",
+        "url": "https://example.test/mcp",
+    }
+    _write_json(mcp_path, value)
+
+
 UNSAFE_CONTENT_CASES: tuple[SourceMutation, ...] = (
     _inject_windows_absolute_path,
     _inject_posix_absolute_path,
@@ -485,6 +520,38 @@ def test_mcp_min_r05_packages_exact_public_http_manifest(source_copy: Path, tmp_
     assert codex_manifest_bytes == claude_manifest_bytes
     assert json.loads(codex_manifest_bytes) == expected_manifest
     assert json.loads(claude_manifest_bytes) == expected_manifest
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (_inject_manifest_hooks, _inject_manifest_local_command),
+    ids=("hooks", "local-command"),
+)
+def test_plugin_package_rejects_manifest_execution_extensions(
+    mutate: SourceMutation, source_copy: Path, tmp_path: Path
+) -> None:
+    mutate(source_copy, tmp_path / "outside")
+
+    with pytest.raises(UnsafeSourceError):
+        build_packages(source_root=source_copy, output_root=tmp_path / "output")
+
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (_inject_mcp_stdio_command, _inject_mcp_extra_server),
+    ids=("stdio-command", "additional-server"),
+)
+def test_plugin_package_rejects_any_mcp_surface_except_sensai_https_endpoint(
+    mutate: SourceMutation, source_copy: Path, tmp_path: Path
+) -> None:
+    mutate(source_copy, tmp_path / "outside")
+
+    with pytest.raises(UnsafeSourceError):
+        build_packages(source_root=source_copy, output_root=tmp_path / "output")
+
+    assert not (tmp_path / "output").exists()
 
 
 def test_plugin_package_001_review_restores_previous_output_when_cleanup_fails(
