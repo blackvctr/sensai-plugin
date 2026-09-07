@@ -1,0 +1,75 @@
+name: Verify release artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-attest:
+    if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    env:
+      MCP_URL: https://black-vector.com/sensai/mcp
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+
+      - name: Require a version tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          [[ "$GITHUB_REF_NAME" =~ ^v.+$ ]]
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Build release bundle
+        run: |
+          uv run --locked python scripts/build_release.py \
+            --output release \
+            --mcp-url "$MCP_URL"
+
+      - name: Independently verify release bundle
+        run: |
+          uv run --locked python scripts/verify_release.py --bundle release
+
+      - name: Write and verify archive checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum sensai-*-claude-marketplace.zip sensai-*-codex-marketplace.zip > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Attest marketplace archives
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: |
+            release/sensai-*-claude-marketplace.zip
+            release/sensai-*-codex-marketplace.zip
+
+      - name: Upload verified release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sensai-release-${{ github.ref_name }}
+          if-no-files-found: error
+          path: |
+            release/release.json
+            release/SHA256SUMS
+            release/sensai-*-claude-marketplace.zip
+            release/sensai-*-codex-marketplace.zip
