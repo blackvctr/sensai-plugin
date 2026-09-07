@@ -33,14 +33,11 @@ def test_public_readme_is_human_installation_guidance_not_a_test_manifest() -> N
     assert "```json" not in readme
 
 
-def test_public_copy_paste_prompts_and_fixed_e2e_input_remain_exact() -> None:
+def test_public_readme_names_the_marketplace_without_an_agent_copy_paste_prompt() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-    russian_prompt = (
-        "Установи плагин Sensai из marketplace blackvctr/sensai-plugin. "
-        "После установки открой новый чат и отправь /sensai:sensai."
-    )
-    assert f"```text\n{russian_prompt}\n```" in readme
-    assert _SCENARIO_PROMPTS[FirstReplyScenario.DIRECT_MARKETPLACE] == russian_prompt
+    assert "Install Sensai from the `blackvctr/sensai-plugin` marketplace." in readme
+    assert "After installation open a new chat" not in readme
+    assert "```text\n" not in readme
 
 
 def test_sensai_skill_description_covers_a_person_starting_consultation() -> None:
