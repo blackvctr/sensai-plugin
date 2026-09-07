@@ -10,8 +10,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P7D"
+exclude-newer = "2026-09-07T00:00:00Z"
 
 [[package]]
 name = "annotated-types"
@@ -811,7 +810,7 @@ wheels = [
 
 [[package]]
 name = "sensai-plugin-build"
-version = "0.2.15"
+version = "0.2.16"
 source = { editable = "." }
 
 [package.dev-dependencies]

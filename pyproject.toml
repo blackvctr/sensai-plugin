@@ -1,12 +1,15 @@
 [project]
 name = "sensai-plugin-build"
-version = "0.2.15"
+version = "0.2.16"
 description = "Deterministic public plugin packaging for Sensai"
 requires-python = ">=3.12"
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+exclude-newer = "2026-09-07T00:00:00Z"
 
 [dependency-groups]
 dev = [
