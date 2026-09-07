@@ -45,8 +45,8 @@ def test_sensai_skill_description_covers_a_person_starting_consultation() -> Non
         text = skill.read_text(encoding="utf-8")
         frontmatter = text.split("---", maxsplit=2)[1]
         assert "person asks to start a Sensai consultation" in frontmatter
-        assert "Keep the person's launch phrase in the host conversation" in text
-        assert "Await the person's role, usual apps or sites, and recurring work" in text
+        assert "Keep the person's launch phrase in the host conversation" not in text
+        assert "Await the person's role, usual apps or sites, and recurring work" not in text
 
 
 def test_built_payloads_keep_the_concise_post_install_consultation_contract(tmp_path: Path) -> None:
@@ -61,6 +61,6 @@ def test_built_payloads_keep_the_concise_post_install_consultation_contract(tmp_
 
     assert codex == claude == source
     normalized = " ".join(codex.lower().split())
-    assert "stated work facts" in normalized
+    assert "stated work facts" not in normalized
     assert "sensitive information" in normalized
     assert "claude mcp login" not in normalized
