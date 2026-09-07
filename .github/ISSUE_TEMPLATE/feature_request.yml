@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest an improvement to Sensai.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the workflow or unmet need.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the outcome you would like.
+    validations:
+      required: true
