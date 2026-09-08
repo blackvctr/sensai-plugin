@@ -2,7 +2,7 @@
 
 ## Consultation data
 
-Sensai receives the messages sent to its MCP tool for a consultation. After the initial onboarding response, Sensai processes consultation messages through its configured OpenAI model runtime. Do not send passwords, private keys, API keys, access tokens, or other secrets in consultation messages.
+Sensai receives only the consultation messages explicitly sent to its MCP tool. It does not automatically receive the host workspace, files, terminal output, or the rest of a host session. After the initial onboarding response, Sensai processes consultation messages through its configured OpenAI model runtime. Do not send passwords, private keys, API keys, access tokens, or other secrets in consultation messages.
 
 Sensai keeps live consultation and runtime data needed to continue a consultation. Request traces are metadata-only, but runtime conversation storage can contain consultation messages and responses.
 

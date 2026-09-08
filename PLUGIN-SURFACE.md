@@ -16,6 +16,6 @@ Before authorization, the MCP endpoint rejects requests and publishes OAuth prot
 
 The authorization server supports authorization-code and refresh-token grants with PKCE S256. Google sign-in requests only the `openid` and `email` scopes; it does not request Gmail, Drive, Calendar, or other Google service scopes.
 
-Authorization protects access to the MCP endpoint. It does not mean that consultation messages are local: authorized consultation messages are sent to Sensai and processed as described in [PRIVACY.md](PRIVACY.md).
+Authorization protects access to the MCP endpoint. It does not mean that consultation messages are local: authorized consultation messages explicitly sent through the MCP tool are sent to Sensai and processed as described in [PRIVACY.md](PRIVACY.md). The plugin does not automatically send the host workspace, files, terminal output, or the rest of a host session.
 
 Repository development files, including root scripts and `.githooks`, are not included in the installed plugin artifact.
